@@ -1,0 +1,1573 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>refdata-flow — Nicholas Owen, ARC</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@300;400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Serif:ital,wght@0,400;1,400&display=swap" rel="stylesheet">
+
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+
+<script type="application/json" id="speaker-notes">
+[
+"Good morning, everyone — thanks for having me. I'm Nicholas, from ARC. Today I want to walk you through refdata-flow, a small pipeline I've built to solve a problem that quietly costs every one of us time: getting hold of clean, versioned reference data. It's a sibling to our rnaseq-flow pipeline, and it's now ready to use on our HPC.",
+
+"Let me start with the problem. Every analysis we run begins with reference data — a genome, a transcriptome, an annotation. And almost every project starts the same way: someone googles for the latest GRCh38 link, downloads it to a scratch directory, the next person can't find it, so they download it again. Different labs end up on slightly different builds. The provenance is whatever happened to be in someone's bash history. None of this is malicious — it's just friction. And it compounds.",
+
+"So I wrote down what I actually wanted. One: reproducibility — the exact sequence used six months ago must still be recoverable. Two: zero duplication — three groups asking for hg38 should get the same physical file. Three: ergonomic — you should not have to memorise database URLs or version strings. Four: HPC-friendly — long-running, resumable, cleanly parallel. Five: an audit trail — when a paper is published, we can prove which bytes were used.",
+
+"refdata-flow is, in one sentence, a Nextflow pipeline that takes a small CSV of generic species queries and produces a permanent, hash-indexed, refgenie-managed reference vault. You write what you want in plain English — 'hg38', 'mouse', 'sacCer3'. The pipeline figures out what that actually means, downloads it from the right provider, and files it away with a cryptographic fingerprint.",
+
+"For people already using rnaseq-flow: think of this as the upstream sibling. rnaseq-flow processes your sequencing reads against a reference. refdata-flow is what gives you that reference, in a form rnaseq-flow and any other nf-core pipeline can consume natively through the REFGENIE environment variable. Same Nextflow style, same conda profile, same run wrapper conventions — designed to feel familiar.",
+
+"Under the hood there are three steps. A Python wizard resolves your generic queries into exact assembly names. A Nextflow pipeline parallelises the actual downloads via genomepy. And a Python post-processor hands everything off to refgenie, which computes the hashes and wires up human-readable aliases. The three steps are decoupled — each is restartable on its own.",
+
+"Step one — resolution. You hand the pipeline a CSV with rows like 'Homo_sapiens, grch38, ensembl' — generic, the kind of thing you'd actually type. The wizard queries Ensembl, UCSC and NCBI to find what 'grch38' really maps to, prompts you interactively if there's ambiguity, and writes the answers to a resolved CSV. That file is cached, so a second run skips the network entirely for anything you've already pinned. To re-pick an assembly, you just delete that row.",
+
+"Step two — download. This is where Nextflow earns its keep. Each resolved row becomes a parallel job running genomepy inside a conda environment. Genomes come down compressed via bgzip, with optional GTF annotations. Nextflow's -resume flag means a re-run skips anything already on disk — you can add a new species to your CSV next month and only that one species will actually be fetched.",
+
+"Step three — ingestion. Once the raw files are on disk, the post-processor calls refgenie build, which reads every base of the FASTA, computes a Refget cryptographic hash, and copies the data into a content-addressed vault. Your custom aliases — 'hg38', 'human', whatever — become symlinks pointing at that hash. After ingestion succeeds, the Nextflow temporary downloads are deleted, so there's no duplication on disk.",
+
+"From the user side, all of that is one command. You edit a CSV, you run the wrapper script, and you point it at where you want the data to live. The wrapper handles the virtualenv, the resolver, the Nextflow launch, and the refgenie ingestion. There's a --dry-run flag if you just want to see what would happen, and a --clean flag to wipe Nextflow's cache when you're done.",
+
+"What you end up with is a directory split into two halves. A 'data' folder where files are stored by their cryptographic hash — that's the source of truth. And an 'alias' folder full of human-readable symlinks. 'GRCh38.p14' points at the hash. 'hg38' points at 'GRCh38.p14'. 'human' points at the same place. Anyone, from any pipeline, can resolve any of those names to the exact same bytes.",
+
+"A note on storage, because this matters on shared HPC. Three things keep us lean. Files are stored compressed throughout. Nextflow's resume means we never re-download. And after refgenie has ingested a genome, the temporary Nextflow copy is removed. The vault is the only persistent copy. A --clean flag lets you sweep work directories and logs at any time.",
+
+"This is the bit I'm proudest of. When you reference a genome by its Refget hash, you are referring to a mathematical fingerprint of the sequence itself — not a filename, not a URL, not a version string. Two people on two HPCs who compute the hash of the same FASTA will get the same hash. That means a published paper can cite the hash, and a reviewer five years later can verify they have the exact same sequence. It's the closest thing genomics has to a DOI for data.",
+
+"Where are we today? Version 0.9 beta is out — full refgenie v3 integration, cryptographic hashing, alias management all working end to end. It's installed on the ARC HPC now. Coming next: support for more providers, variation data, and a thin CLI for querying the vault from any pipeline. I'd like to start treating this as shared infrastructure for the group.",
+
+"So — two asks. First, please try it. It's on our HPC, the user guide is in the repo, and the whole pipeline runs from one command. Second, tell me what reference data you need that isn't there yet. The CSV is designed to grow. If your project needs a non-model organism, a custom build, or a specific annotation release, open a request and we'll add it. Thank you — happy to take questions."
+]
+</script>
+
+<style>
+:root{
+  --bg: #f6f4ef;
+  --bg-alt: #efece4;
+  --ink: #1a1a1a;
+  --ink-2: #2a2a2a;
+  --muted: #6b6b6b;
+  --rule: #cfc9bd;
+  --rule-strong: #1a1a1a;
+  --accent: oklch(0.55 0.10 200);
+  --accent-soft: oklch(0.92 0.04 200);
+  --code-bg: #1a1a1a;
+  --code-ink: #f6f4ef;
+  --code-mute: #8a8a8a;
+  --code-accent: oklch(0.78 0.12 200);
+  --code-amber: oklch(0.80 0.12 70);
+
+  --font-sans: "IBM Plex Sans", system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, monospace;
+  --font-serif: "IBM Plex Serif", Georgia, serif;
+
+  --type-display: 128px;
+  --type-title: 64px;
+  --type-subtitle: 44px;
+  --type-body: 30px;
+  --type-small: 24px;
+  --type-eyebrow: 24px;
+  --type-mono: 24px;
+
+  --pad-top: 96px;
+  --pad-bottom: 88px;
+  --pad-x: 112px;
+  --gap-title: 48px;
+  --gap-item: 28px;
+}
+
+deck-stage{
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--font-sans);
+  font-weight: 400;
+  letter-spacing: -0.005em;
+}
+
+deck-stage > section{
+  background: var(--bg);
+  color: var(--ink);
+  padding: var(--pad-top) var(--pad-x) var(--pad-bottom);
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  position: relative;
+}
+
+/* ---- shared chrome ---- */
+.chrome{
+  position: absolute;
+  left: var(--pad-x);
+  right: var(--pad-x);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-family: var(--font-mono);
+  font-size: var(--type-eyebrow);
+  color: var(--muted);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.chrome-top{ top: 44px; }
+.chrome-bot{ bottom: 44px; }
+.chrome .dot{
+  display: inline-block;
+  width: 10px; height: 10px;
+  border-radius: 50%;
+  background: var(--accent);
+  margin-right: 14px;
+  vertical-align: middle;
+}
+.chrome .ver{ color: var(--ink); font-weight: 500; }
+
+/* ---- eyebrow + title pattern ---- */
+.eyebrow{
+  font-family: var(--font-mono);
+  font-size: var(--type-eyebrow);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--accent);
+  margin: 0 0 24px 0;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+.eyebrow::before{
+  content: "";
+  width: 32px;
+  height: 1px;
+  background: var(--accent);
+}
+.slide-title{
+  font-family: var(--font-sans);
+  font-weight: 500;
+  font-size: var(--type-title);
+  line-height: 1.04;
+  letter-spacing: -0.02em;
+  margin: 0;
+  color: var(--ink);
+  text-wrap: balance;
+}
+.slide-sub{
+  font-family: var(--font-serif);
+  font-style: italic;
+  font-weight: 400;
+  font-size: var(--type-subtitle);
+  line-height: 1.15;
+  color: var(--ink-2);
+  margin: 32px 0 0 0;
+  text-wrap: pretty;
+  max-width: 1500px;
+}
+.body{
+  font-size: var(--type-body);
+  line-height: 1.4;
+  color: var(--ink-2);
+  text-wrap: pretty;
+}
+
+/* ---- generic helpers ---- */
+.hr{ height:1px; background: var(--rule); margin: var(--gap-item) 0; border:0; }
+.hr-strong{ height:2px; background: var(--rule-strong); margin: var(--gap-item) 0; border:0; }
+.mono{ font-family: var(--font-mono); }
+.muted{ color: var(--muted); }
+.serif-italic{ font-family: var(--font-serif); font-style: italic; }
+
+/* ---- numbered list ---- */
+.num-list{ list-style: none; margin:0; padding:0; display:flex; flex-direction:column; gap: var(--gap-item); }
+.num-list li{
+  display: grid;
+  grid-template-columns: 88px 1fr;
+  align-items: baseline;
+  gap: 28px;
+  padding-bottom: 24px;
+  border-bottom: 1px solid var(--rule);
+}
+.num-list li:last-child{ border-bottom: 0; }
+.num-list .n{
+  font-family: var(--font-mono);
+  font-size: var(--type-small);
+  color: var(--accent);
+  letter-spacing: 0.04em;
+}
+.num-list .lbl{ font-size: var(--type-body); font-weight: 500; color: var(--ink); }
+.num-list .desc{ font-size: var(--type-small); color: var(--muted); margin-top: 8px; line-height: 1.4; }
+
+/* ---- code block ---- */
+.code{
+  background: var(--code-bg);
+  color: var(--code-ink);
+  font-family: var(--font-mono);
+  font-size: var(--type-mono);
+  line-height: 1.55;
+  padding: 36px 44px;
+  border-radius: 0;
+  overflow: hidden;
+}
+.code .c{ color: var(--code-mute); }
+.code .k{ color: var(--code-amber); }
+.code .s{ color: var(--code-accent); }
+.code .p{ color: var(--code-ink); }
+.code .a{ color: var(--code-amber); }
+
+/* ---- tag chip ---- */
+.chip{
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 16px;
+  border: 1px solid var(--rule);
+  border-radius: 999px;
+  font-family: var(--font-mono);
+  font-size: var(--type-eyebrow);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--ink-2);
+}
+.chip .dot{ width:8px; height:8px; border-radius:50%; background: var(--accent); }
+
+/* =========================================================
+   SLIDE 1 — TITLE
+   ========================================================= */
+.s-title{
+  background: var(--bg);
+  justify-content: space-between;
+}
+.s-title .top{
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+}
+.s-title .mark{
+  font-family: var(--font-mono);
+  font-size: var(--type-eyebrow);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--ink);
+}
+.s-title .mark .v{ color: var(--muted); margin-left: 12px; }
+.s-title .center{ flex: 1; display:flex; flex-direction: column; justify-content: center; }
+.s-title h1{
+  font-family: var(--font-sans);
+  font-weight: 500;
+  font-size: var(--type-display);
+  line-height: 0.96;
+  letter-spacing: -0.035em;
+  margin: 0;
+  color: var(--ink);
+}
+.s-title h1 .accent{ color: var(--accent); font-weight: 500; }
+.s-title .logo{
+  display: block;
+  width: 1100px;
+  max-width: 100%;
+  height: auto;
+  margin: 0 0 0 -18px;
+}
+.s-title .tag{
+  font-family: var(--font-serif);
+  font-style: italic;
+  font-size: 52px;
+  color: var(--ink-2);
+  margin-top: 36px;
+  max-width: 1300px;
+  line-height: 1.15;
+}
+.s-title .meta{
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 56px;
+  align-items: end;
+  padding-top: 36px;
+  border-top: 2px solid var(--ink);
+}
+.s-title .meta .k{
+  font-family: var(--font-mono);
+  font-size: var(--type-eyebrow);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin-bottom: 10px;
+}
+.s-title .meta .v{
+  font-family: var(--font-sans);
+  font-weight: 500;
+  font-size: 28px;
+  color: var(--ink);
+}
+
+/* helix-ish abstract */
+.helix{
+  position: absolute;
+  right: var(--pad-x);
+  top: 220px;
+  width: 360px;
+  height: 360px;
+  opacity: 1;
+}
+
+/* =========================================================
+   SLIDE 2 — Problem
+   ========================================================= */
+.s-problem .body-grid{
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 96px;
+  margin-top: var(--gap-title);
+  flex: 1;
+}
+.s-problem .lead{
+  font-family: var(--font-serif);
+  font-style: italic;
+  font-size: 44px;
+  line-height: 1.2;
+  color: var(--ink);
+  text-wrap: pretty;
+}
+.s-problem .symptoms{ list-style: none; margin:0; padding:0; }
+.s-problem .symptoms li{
+  font-size: var(--type-body);
+  line-height: 1.35;
+  padding: 22px 0;
+  border-bottom: 1px solid var(--rule);
+  color: var(--ink-2);
+  display: grid;
+  grid-template-columns: 40px 1fr;
+  gap: 18px;
+  align-items: baseline;
+}
+.s-problem .symptoms li:last-child{ border-bottom: 0; }
+.s-problem .symptoms .x{
+  font-family: var(--font-mono);
+  font-size: var(--type-eyebrow);
+  color: var(--accent);
+  letter-spacing: 0.04em;
+}
+
+/* =========================================================
+   SLIDE 3 — Goals
+   ========================================================= */
+.s-goals .goals{
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 0;
+  margin-top: var(--gap-title);
+  flex: 1;
+  border-top: 2px solid var(--ink);
+  border-bottom: 2px solid var(--ink);
+}
+.s-goals .goal{
+  padding: 40px 32px 40px 0;
+  border-right: 1px solid var(--rule);
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+}
+.s-goals .goal:last-child{ border-right: 0; }
+.s-goals .goal:not(:first-child){ padding-left: 32px; }
+.s-goals .n{
+  font-family: var(--font-mono);
+  font-size: var(--type-eyebrow);
+  letter-spacing: 0.14em;
+  color: var(--accent);
+  margin-bottom: 22px;
+}
+.s-goals .h{
+  font-family: var(--font-sans);
+  font-weight: 500;
+  font-size: 36px;
+  line-height: 1.1;
+  letter-spacing: -0.015em;
+  color: var(--ink);
+  margin-bottom: 16px;
+}
+.s-goals .d{
+  font-size: var(--type-small);
+  line-height: 1.4;
+  color: var(--muted);
+}
+
+/* =========================================================
+   SLIDE 4 — at a glance
+   ========================================================= */
+.s-glance{ justify-content: space-between; }
+.s-glance .lead{
+  font-family: var(--font-serif);
+  font-style: italic;
+  font-size: 52px;
+  line-height: 1.18;
+  letter-spacing: -0.005em;
+  color: var(--ink);
+  max-width: 1500px;
+  margin-top: var(--gap-title);
+}
+.s-glance .strip{
+  margin-top: 64px;
+  border-top: 2px solid var(--ink);
+  padding-top: 36px;
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 48px;
+}
+.s-glance .strip .k{
+  font-family: var(--font-mono);
+  font-size: var(--type-eyebrow);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin-bottom: 12px;
+}
+.s-glance .strip .v{ font-size: 28px; font-weight: 500; color: var(--ink); line-height: 1.25; }
+
+/* =========================================================
+   SLIDE 5 — sibling to rnaseq-flow
+   ========================================================= */
+.s-sibling .pair{
+  display: grid;
+  grid-template-columns: 1fr 80px 1fr;
+  gap: 0;
+  margin-top: var(--gap-title);
+  flex: 1;
+  align-items: stretch;
+}
+.s-sibling .card{
+  border: 1px solid var(--rule);
+  background: #fff;
+  padding: 44px 40px;
+  display: flex;
+  flex-direction: column;
+}
+.s-sibling .card.me{
+  border: 2px solid var(--accent);
+  background: var(--bg);
+}
+.s-sibling .card .name{
+  font-family: var(--font-mono);
+  font-size: 32px;
+  font-weight: 500;
+  color: var(--ink);
+  letter-spacing: -0.01em;
+  margin-bottom: 6px;
+}
+.s-sibling .card .name .accent{ color: var(--accent); }
+.s-sibling .card .role{
+  font-family: var(--font-serif);
+  font-style: italic;
+  font-size: 26px;
+  color: var(--muted);
+  margin-bottom: 28px;
+}
+.s-sibling .card ul{ list-style: none; margin: 0 0 28px 0; padding: 0; }
+.s-sibling .card li{
+  font-size: var(--type-small);
+  padding: 12px 0;
+  border-bottom: 1px solid var(--rule);
+  color: var(--ink-2);
+  display: grid;
+  grid-template-columns: 140px 1fr;
+  gap: 16px;
+}
+.s-sibling .card li .lk{
+  font-family: var(--font-mono);
+  font-size: 24px;
+  color: var(--muted);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.s-sibling .arrow{
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--font-mono);
+  font-size: 18px;
+  color: var(--muted);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+.s-sibling .arrow svg{ width: 56px; height: 56px; }
+.s-sibling .shared{
+  margin-top: auto;
+  padding-top: 24px;
+  border-top: 1px solid var(--rule);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+/* =========================================================
+   SLIDE 6 — three-step architecture
+   ========================================================= */
+.s-arch .flow{
+  margin-top: var(--gap-title);
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+.s-arch .row{
+  display: grid;
+  grid-template-columns: 1fr 80px 1fr 80px 1fr;
+  align-items: stretch;
+  gap: 0;
+}
+.s-arch .node{
+  background: #fff;
+  border: 1px solid var(--rule);
+  padding: 36px 32px 36px;
+  display: flex;
+  flex-direction: column;
+  min-height: 320px;
+}
+.s-arch .node .num{
+  font-family: var(--font-mono);
+  font-size: var(--type-eyebrow);
+  color: var(--accent);
+  letter-spacing: 0.14em;
+  margin-bottom: 18px;
+}
+.s-arch .node .h{
+  font-family: var(--font-sans);
+  font-weight: 500;
+  font-size: 36px;
+  line-height: 1.05;
+  color: var(--ink);
+  margin-bottom: 16px;
+  letter-spacing: -0.015em;
+}
+.s-arch .node .tool{
+  font-family: var(--font-mono);
+  font-size: 24px;
+  color: var(--muted);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  margin-bottom: 20px;
+}
+.s-arch .node .d{
+  font-size: var(--type-small);
+  line-height: 1.4;
+  color: var(--ink-2);
+}
+.s-arch .arr{
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.s-arch .arr svg{ width: 64px; height: 24px; }
+.s-arch .bus{
+  margin-top: 40px;
+  display: grid;
+  grid-template-columns: 1fr 80px 1fr 80px 1fr;
+  gap: 0;
+  align-items: center;
+}
+.s-arch .bus .pill{
+  text-align: center;
+  font-family: var(--font-mono);
+  font-size: 24px;
+  letter-spacing: 0.04em;
+  color: var(--ink);
+  background: var(--accent-soft);
+  padding: 16px 8px;
+}
+.s-arch .bus .pill .lbl{ display: none; }
+.s-arch .bus .gap{}
+
+/* =========================================================
+   STEP DETAIL SLIDES (7,8,9)
+   ========================================================= */
+.s-step{ justify-content: flex-start; }
+.s-step .head{
+  display: grid;
+  grid-template-columns: 200px 1fr;
+  gap: 56px;
+  align-items: end;
+}
+.s-step .body-row .code{
+  font-size: 24px;
+  padding: 24px 32px;
+  line-height: 1.45;
+}
+.s-step .step-num{
+  font-family: var(--font-mono);
+  font-size: 200px;
+  line-height: 0.85;
+  font-weight: 300;
+  color: var(--accent);
+  letter-spacing: -0.04em;
+}
+.s-step .step-head .eyebrow{ margin-bottom: 14px; }
+.s-step .step-head .h{
+  font-family: var(--font-sans);
+  font-weight: 500;
+  font-size: 88px;
+  line-height: 0.96;
+  letter-spacing: -0.025em;
+  color: var(--ink);
+  margin: 0;
+}
+.s-step .step-head .sub{
+  font-family: var(--font-serif);
+  font-style: italic;
+  font-size: 36px;
+  color: var(--ink-2);
+  margin-top: 22px;
+  max-width: 1100px;
+  line-height: 1.2;
+}
+.s-step .body-row{
+  margin-top: 56px;
+  flex: 1;
+  display: grid;
+  grid-template-columns: 1.1fr 1fr;
+  gap: 80px;
+  align-items: flex-start;
+}
+.s-step .points{ list-style: none; margin:0; padding:0; }
+.s-step .points li{
+  font-size: var(--type-body);
+  line-height: 1.35;
+  padding: 22px 0;
+  border-bottom: 1px solid var(--rule);
+  color: var(--ink-2);
+  display: grid;
+  grid-template-columns: 56px 1fr;
+  gap: 18px;
+  align-items: baseline;
+}
+.s-step .points li:last-child{ border-bottom: 0; }
+.s-step .points .b{ font-weight: 500; color: var(--ink); }
+.s-step .points .marker{
+  font-family: var(--font-mono);
+  font-size: var(--type-small);
+  color: var(--accent);
+  letter-spacing: 0.04em;
+}
+
+/* =========================================================
+   SLIDE 10 — one command
+   ========================================================= */
+.s-run .lead{
+  font-family: var(--font-serif);
+  font-style: italic;
+  font-size: 40px;
+  line-height: 1.2;
+  color: var(--ink-2);
+  margin-top: var(--gap-title);
+  max-width: 1300px;
+}
+.s-run .two{
+  margin-top: 56px;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 56px;
+  flex: 1;
+}
+.s-run .col h3{
+  font-family: var(--font-mono);
+  font-size: var(--type-eyebrow);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin: 0 0 18px 0;
+}
+.s-run .flags{ list-style: none; margin: 28px 0 0; padding: 0; }
+.s-run .flags li{
+  font-size: var(--type-small);
+  padding: 16px 0;
+  border-bottom: 1px solid var(--rule);
+  display: grid;
+  grid-template-columns: 200px 1fr;
+  gap: 20px;
+}
+.s-run .flags li:last-child{ border-bottom: 0; }
+.s-run .flags .f{ font-family: var(--font-mono); color: var(--accent); }
+.s-run .flags .d{ color: var(--ink-2); }
+
+/* =========================================================
+   SLIDE 11 — output structure
+   ========================================================= */
+.s-out .row{
+  margin-top: var(--gap-title);
+  display: grid;
+  grid-template-columns: 1.05fr 1fr;
+  gap: 72px;
+  flex: 1;
+  align-items: stretch;
+}
+.s-out .tree{
+  background: var(--bg-alt);
+  border: 1px solid var(--rule);
+  padding: 32px 36px;
+  font-family: var(--font-mono);
+  font-size: 24px;
+  line-height: 1.5;
+  color: var(--ink-2);
+  overflow: hidden;
+  white-space: pre;
+  margin: 0;
+  tab-size: 4;
+}
+.s-out .tree .accent{ color: var(--accent); font-weight: 500; }
+.s-out .tree .c{ color: var(--muted); }
+.s-out .tree .hash{ color: var(--ink); font-weight: 500; }
+.s-out .tree .arrow{ color: var(--muted); }
+.s-out .points{ list-style:none; margin:0; padding:0; align-self: center;}
+.s-out .points li{
+  padding: 20px 0;
+  border-bottom: 1px solid var(--rule);
+  font-size: var(--type-body);
+  line-height: 1.35;
+  color: var(--ink-2);
+  display: grid;
+  grid-template-columns: 56px 1fr;
+  gap: 18px;
+  align-items: baseline;
+}
+.s-out .points li:last-child{ border-bottom: 0; }
+.s-out .points .marker{
+  font-family: var(--font-mono);
+  font-size: var(--type-small);
+  color: var(--accent);
+}
+.s-out .points .b{ font-weight: 500; color: var(--ink); }
+
+/* =========================================================
+   SLIDE 12 — storage
+   ========================================================= */
+.s-storage .row{
+  margin-top: var(--gap-title);
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 0;
+  flex: 1;
+  border-top: 2px solid var(--ink);
+  border-bottom: 2px solid var(--ink);
+}
+.s-storage .col{
+  padding: 56px 40px 56px 0;
+  border-right: 1px solid var(--rule);
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+}
+.s-storage .col:last-child{ border-right: 0; }
+.s-storage .col:not(:first-child){ padding-left: 40px; }
+.s-storage .col .marker{
+  font-family: var(--font-mono);
+  font-size: var(--type-eyebrow);
+  letter-spacing: 0.14em;
+  color: var(--accent);
+  margin-bottom: 20px;
+}
+.s-storage .col .h{
+  font-family: var(--font-sans);
+  font-weight: 500;
+  font-size: 42px;
+  line-height: 1.05;
+  color: var(--ink);
+  letter-spacing: -0.018em;
+  margin-bottom: 22px;
+}
+.s-storage .col .d{
+  font-size: 26px;
+  line-height: 1.4;
+  color: var(--ink-2);
+}
+.s-storage .col .tag{
+  margin-top: 28px;
+  font-family: var(--font-mono);
+  font-size: 24px;
+  color: var(--muted);
+  letter-spacing: 0.02em;
+}
+
+/* =========================================================
+   SLIDE 13 — cryptographic reproducibility
+   ========================================================= */
+.s-hash{ justify-content: space-between; }
+.s-hash .quote{
+  font-family: var(--font-serif);
+  font-style: italic;
+  font-size: 58px;
+  line-height: 1.16;
+  color: var(--ink);
+  max-width: 1500px;
+  margin-top: var(--gap-title);
+  text-wrap: pretty;
+}
+.s-hash .quote .key{
+  font-family: var(--font-mono);
+  font-style: normal;
+  font-size: 48px;
+  color: var(--accent);
+  box-shadow: inset 0 -16px 0 var(--accent-soft);
+  padding: 0 6px;
+  white-space: nowrap;
+}
+.s-hash .bottom{
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 64px;
+  border-top: 2px solid var(--ink);
+  padding-top: 36px;
+  margin-top: 48px;
+}
+.s-hash .bottom .k{
+  font-family: var(--font-mono);
+  font-size: var(--type-eyebrow);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin-bottom: 14px;
+}
+.s-hash .bottom .v{
+  font-size: 26px;
+  line-height: 1.35;
+  color: var(--ink);
+}
+
+/* =========================================================
+   SLIDE 14 — status & roadmap
+   ========================================================= */
+.s-status .grid{
+  display: grid;
+  grid-template-columns: 1.1fr 1fr;
+  gap: 80px;
+  margin-top: var(--gap-title);
+  flex: 1;
+}
+.s-status .now{
+  background: var(--accent-soft);
+  padding: 44px 44px;
+  border: 0;
+}
+.s-status .now .tag{
+  font-family: var(--font-mono);
+  font-size: var(--type-eyebrow);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--ink-2);
+  margin-bottom: 22px;
+}
+.s-status .now .v{
+  font-family: var(--font-sans);
+  font-weight: 500;
+  font-size: 56px;
+  line-height: 1.05;
+  letter-spacing: -0.02em;
+  color: var(--ink);
+  margin-bottom: 28px;
+}
+.s-status .now ul{ list-style: none; margin: 0; padding: 0; }
+.s-status .now li{
+  padding: 14px 0;
+  font-size: 24px;
+  color: var(--ink-2);
+  border-top: 1px solid rgba(0,0,0,0.12);
+  display: grid;
+  grid-template-columns: 22px 1fr;
+  gap: 14px;
+  align-items: baseline;
+}
+.s-status .now li:first-child{ border-top: 0; }
+.s-status .now li .tick{
+  font-family: var(--font-mono);
+  color: var(--ink);
+  font-weight: 600;
+}
+.s-status .next h4{
+  font-family: var(--font-mono);
+  font-size: var(--type-eyebrow);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin: 0 0 22px 0;
+}
+.s-status .next ul{ list-style: none; margin:0; padding: 0; }
+.s-status .next li{
+  padding: 22px 0;
+  border-bottom: 1px solid var(--rule);
+  font-size: 28px;
+  line-height: 1.3;
+  color: var(--ink-2);
+  display: grid;
+  grid-template-columns: 100px 1fr;
+  gap: 22px;
+  align-items: baseline;
+}
+.s-status .next li:last-child{ border-bottom: 0; }
+.s-status .next li .when{
+  font-family: var(--font-mono);
+  font-size: 24px;
+  color: var(--accent);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+/* =========================================================
+   SLIDE 15 — CTA
+   ========================================================= */
+.s-cta{ justify-content: space-between; }
+.s-cta .big{
+  font-family: var(--font-sans);
+  font-weight: 500;
+  font-size: 120px;
+  line-height: 0.95;
+  letter-spacing: -0.035em;
+  color: var(--ink);
+  max-width: 1500px;
+  margin-top: var(--gap-title);
+}
+.s-cta .big .accent{ color: var(--accent); }
+.s-cta .ask{
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 80px;
+  margin-top: 56px;
+}
+.s-cta .ask .item{ padding-top: 28px; border-top: 2px solid var(--ink); }
+.s-cta .ask .item .n{
+  font-family: var(--font-mono);
+  font-size: var(--type-eyebrow);
+  letter-spacing: 0.14em;
+  color: var(--accent);
+  margin-bottom: 14px;
+}
+.s-cta .ask .item .h{
+  font-family: var(--font-sans);
+  font-weight: 500;
+  font-size: 40px;
+  line-height: 1.1;
+  color: var(--ink);
+  margin-bottom: 12px;
+  letter-spacing: -0.015em;
+}
+.s-cta .ask .item .d{
+  font-size: 24px;
+  line-height: 1.35;
+  color: var(--muted);
+}
+.s-cta .builton{
+  display: flex;
+  align-items: center;
+  gap: 56px;
+  padding-top: 32px;
+  border-top: 1px solid var(--rule);
+  margin-top: 48px;
+}
+.s-cta .builton .label{
+  font-family: var(--font-mono);
+  font-size: 24px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.s-cta .builton .logos{
+  display: flex;
+  align-items: center;
+  gap: 64px;
+  flex: 1;
+}
+.s-cta .builton img{ height: 56px; width: auto; display: block; }
+.s-cta .builton img.ga4gh{ height: 76px; }
+.s-cta .foot{
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 56px;
+  padding-top: 28px;
+  margin-top: 28px;
+  border-top: 1px solid var(--rule);
+}
+.s-cta .foot .k{
+  font-family: var(--font-mono);
+  font-size: var(--type-eyebrow);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin-bottom: 10px;
+}
+.s-cta .foot .v{ font-size: 24px; color: var(--ink); font-family: var(--font-mono); }
+</style>
+</head>
+
+<body>
+
+<deck-stage width="1920" height="1080" theme="light">
+
+  <!-- ============================================================
+       SLIDE 1 — TITLE
+       ============================================================ -->
+  <section data-label="01 Title" class="s-title">
+    <div class="top">
+      <div class="mark"><span class="dot" style="display:inline-block;width:10px;height:10px;border-radius:50%;background:var(--accent);margin-right:14px;vertical-align:middle"></span>refdata-flow<span class="v">v0.9 β · 2026-05-27</span></div>
+      <div class="mark">ARC · Advanced Research Computing</div>
+    </div>
+
+    <svg class="helix" viewBox="0 0 200 200" fill="none" aria-hidden="true">
+      <g stroke="currentColor" stroke-width="1" style="color: var(--ink);">
+        <path d="M20 20 Q100 60 180 20" />
+        <path d="M20 60 Q100 100 180 60" />
+        <path d="M20 100 Q100 140 180 100" />
+        <path d="M20 140 Q100 180 180 140" />
+        <path d="M20 180 Q100 220 180 180" />
+        <path d="M20 20 Q100 -20 180 20" opacity="0.4" />
+        <path d="M20 60 Q100 20 180 60" opacity="0.4" />
+        <path d="M20 100 Q100 60 180 100" opacity="0.4" />
+        <path d="M20 140 Q100 100 180 140" opacity="0.4" />
+        <path d="M20 180 Q100 140 180 180" opacity="0.4" />
+      </g>
+      <g fill="var(--accent)">
+        <circle cx="20" cy="20" r="3"/><circle cx="180" cy="20" r="3"/>
+        <circle cx="20" cy="60" r="3"/><circle cx="180" cy="60" r="3"/>
+        <circle cx="20" cy="100" r="3"/><circle cx="180" cy="100" r="3"/>
+        <circle cx="20" cy="140" r="3"/><circle cx="180" cy="140" r="3"/>
+        <circle cx="20" cy="180" r="3"/><circle cx="180" cy="180" r="3"/>
+      </g>
+    </svg>
+
+    <div class="center">
+      <img class="logo" src="assets/refdata-flow_logo.png" alt="refdata-flow">
+      <div class="tag">Reproducible reference data downloads for genomes, transcriptomes &amp; annotations.</div>
+    </div>
+
+    <div class="meta">
+      <div><div class="k">Speaker</div><div class="v">Nicholas Owen</div></div>
+      <div><div class="k">Team</div><div class="v">ARC — Advanced Research Computing</div></div>
+      <div><div class="k">Status</div><div class="v">v0.9 β · live on ARC HPC</div></div>
+      <div><div class="k">Stack</div><div class="v">Nextflow · genomepy · refgenie</div></div>
+    </div>
+  </section>
+
+  <!-- ============================================================
+       SLIDE 2 — Problem
+       ============================================================ -->
+  <section data-label="02 The reference data problem" class="s-problem">
+    <div class="chrome chrome-top"><span><span class="dot"></span>refdata-flow</span><span>02 / 15</span></div>
+
+    <p class="eyebrow">Motivation</p>
+    <h2 class="slide-title">The reference data problem.</h2>
+
+    <div class="body-grid">
+      <p class="lead">Every analysis starts the same way — somebody downloads a genome. And then somebody else downloads it again.</p>
+
+      <ul class="symptoms">
+        <li><span class="x">01</span><span>The same FASTA fetched five times across a single shared filesystem.</span></li>
+        <li><span class="x">02</span><span>Different groups quietly running against different Ensembl builds.</span></li>
+        <li><span class="x">03</span><span>“Where did this come from?” answered by reading someone’s <span class="mono">bash_history</span>.</span></li>
+        <li><span class="x">04</span><span>No way to prove, in a paper, exactly which bytes were used.</span></li>
+      </ul>
+    </div>
+  </section>
+
+  <!-- ============================================================
+       SLIDE 3 — Design goals
+       ============================================================ -->
+  <section data-label="03 Design goals" class="s-goals">
+    <div class="chrome chrome-top"><span><span class="dot"></span>refdata-flow</span><span>03 / 15</span></div>
+
+    <p class="eyebrow">What we wanted</p>
+    <h2 class="slide-title">Five things, non-negotiable.</h2>
+
+    <div class="goals">
+      <div class="goal">
+        <div>
+          <div class="n">01</div>
+          <div class="h">Reproducible</div>
+        </div>
+        <div class="d">The bytes from six months ago are the bytes from today. Forever.</div>
+      </div>
+      <div class="goal">
+        <div>
+          <div class="n">02</div>
+          <div class="h">Zero duplication</div>
+        </div>
+        <div class="d">One physical copy on disk, shared across users, builds, aliases.</div>
+      </div>
+      <div class="goal">
+        <div>
+          <div class="n">03</div>
+          <div class="h">Ergonomic</div>
+        </div>
+        <div class="d">Ask for <span class="mono">hg38</span>, not for a URL or a release number.</div>
+      </div>
+      <div class="goal">
+        <div>
+          <div class="n">04</div>
+          <div class="h">HPC-native</div>
+        </div>
+        <div class="d">Resumable, parallel, conda-managed, no surprise reruns.</div>
+      </div>
+      <div class="goal">
+        <div>
+          <div class="n">05</div>
+          <div class="h">Auditable</div>
+        </div>
+        <div class="d">A fingerprint per dataset that any reviewer can verify.</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================================================
+       SLIDE 4 — at a glance
+       ============================================================ -->
+  <section data-label="04 refdata-flow at a glance" class="s-glance">
+    <div class="chrome chrome-top"><span><span class="dot"></span>refdata-flow</span><span>04 / 15</span></div>
+
+    <p class="eyebrow">refdata-flow, in one sentence</p>
+    <h2 class="slide-title">What it is.</h2>
+
+    <p class="lead">A Nextflow pipeline that turns a small CSV of generic species queries into a <span style="color:var(--accent)">permanent, hash-indexed, refgenie-managed reference vault</span>.</p>
+
+    <div class="strip">
+      <div><div class="k">Input</div><div class="v">CSV of generic queries<br><span class="mono muted" style="font-size:24px">grch38 · mouse · sacCer3</span></div></div>
+      <div><div class="k">Engine</div><div class="v">Nextflow + genomepy<br><span class="mono muted" style="font-size:24px">conda · resume · parallel</span></div></div>
+      <div><div class="k">Output</div><div class="v">Refgenie vault<br><span class="mono muted" style="font-size:24px">hashed + aliased</span></div></div>
+      <div><div class="k">Consumed by</div><div class="v">Any nf-core pipeline<br><span class="mono muted" style="font-size:24px">$REFGENIE</span></div></div>
+    </div>
+  </section>
+
+  <!-- ============================================================
+       SLIDE 5 — sibling to rnaseq-flow
+       ============================================================ -->
+  <section data-label="05 Sibling to rnaseq-flow" class="s-sibling">
+    <div class="chrome chrome-top"><span><span class="dot"></span>refdata-flow</span><span>05 / 15</span></div>
+
+    <p class="eyebrow">In the family</p>
+    <h2 class="slide-title">A sibling to rnaseq-flow.</h2>
+
+    <div class="pair">
+      <div class="card me">
+        <div class="name"><span class="accent">refdata</span>-flow</div>
+        <div class="role">Upstream — supplies the reference.</div>
+        <ul>
+          <li><span class="lk">Input</span><span>CSV of species queries</span></li>
+          <li><span class="lk">Output</span><span>Hashed refgenie vault</span></li>
+          <li><span class="lk">Runs</span><span>Once per organism, then dormant</span></li>
+          <li><span class="lk">Lives at</span><span class="mono">$REFGENIE</span></li>
+        </ul>
+        <div class="shared">
+          <span class="chip"><span class="dot"></span>Nextflow DSL2</span>
+          <span class="chip"><span class="dot"></span>conda profile</span>
+          <span class="chip"><span class="dot"></span>resume-safe</span>
+          <span class="chip"><span class="dot"></span>shared run.sh wrapper</span>
+        </div>
+      </div>
+
+      <div class="arrow">
+        <svg viewBox="0 0 56 56" fill="none">
+          <path d="M4 28 H48" stroke="currentColor" stroke-width="1.5"/>
+          <path d="M40 20 L48 28 L40 36" stroke="currentColor" stroke-width="1.5" fill="none"/>
+        </svg>
+      </div>
+
+      <div class="card">
+        <div class="name">rnaseq-flow</div>
+        <div class="role">Downstream — processes the reads.</div>
+        <ul>
+          <li><span class="lk">Input</span><span>FASTQ + reference</span></li>
+          <li><span class="lk">Output</span><span>Quant matrices, QC reports</span></li>
+          <li><span class="lk">Runs</span><span>Per project, repeatedly</span></li>
+          <li><span class="lk">Reads</span><span class="mono">$REFGENIE</span></li>
+        </ul>
+        <div class="shared">
+          <span class="chip"><span class="dot"></span>Nextflow DSL2</span>
+          <span class="chip"><span class="dot"></span>conda profile</span>
+          <span class="chip"><span class="dot"></span>resume-safe</span>
+          <span class="chip"><span class="dot"></span>shared run.sh wrapper</span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================================================
+       SLIDE 6 — architecture
+       ============================================================ -->
+  <section data-label="06 Three-step architecture" class="s-arch">
+    <div class="chrome chrome-top"><span><span class="dot"></span>refdata-flow</span><span>06 / 15</span></div>
+
+    <p class="eyebrow">Architecture</p>
+    <h2 class="slide-title">Three steps, end to end.</h2>
+
+    <div class="flow">
+      <div class="row">
+        <div class="node">
+          <div class="num">01 · Resolve</div>
+          <div class="h">Map generic queries to exact assemblies.</div>
+          <div class="tool">resolve.py · Python</div>
+          <div class="d">Searches Ensembl, UCSC and NCBI; prompts on ambiguity; caches answers to a resolved CSV.</div>
+        </div>
+
+        <div class="arr">
+          <svg viewBox="0 0 64 24" fill="none">
+            <path d="M0 12 H56" stroke="currentColor" stroke-width="1.25"/>
+            <path d="M48 4 L56 12 L48 20" stroke="currentColor" stroke-width="1.25" fill="none"/>
+          </svg>
+        </div>
+
+        <div class="node">
+          <div class="num">02 · Download</div>
+          <div class="h">Parallel fetches, on background nodes.</div>
+          <div class="tool">main.nf · Nextflow · genomepy</div>
+          <div class="d">One job per assembly. FASTA and GTF land compressed in provider-specific staging directories.</div>
+        </div>
+
+        <div class="arr">
+          <svg viewBox="0 0 64 24" fill="none">
+            <path d="M0 12 H56" stroke="currentColor" stroke-width="1.25"/>
+            <path d="M48 4 L56 12 L48 20" stroke="currentColor" stroke-width="1.25" fill="none"/>
+          </svg>
+        </div>
+
+        <div class="node">
+          <div class="num">03 · Ingest</div>
+          <div class="h">Hash, alias, archive.</div>
+          <div class="tool">update_refgenie.py · refgenie v3</div>
+          <div class="d">Refgenie computes Refget hashes, builds the content-addressed vault, wires up aliases, and cleans up.</div>
+        </div>
+      </div>
+
+      <div class="bus">
+        <div class="pill">requests_resolved.csv</div>
+        <div class="gap"></div>
+        <div class="pill">provider/species/assembly/*.gz</div>
+        <div class="gap"></div>
+        <div class="pill">data/&lt;hash&gt;/ + alias/*</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================================================
+       SLIDE 7 — Step 1 Resolve
+       ============================================================ -->
+  <section data-label="07 Step 1 Resolution" class="s-step">
+    <div class="chrome chrome-top"><span><span class="dot"></span>refdata-flow</span><span>07 / 15</span></div>
+
+    <div class="head">
+      <div class="step-num">01</div>
+      <div class="step-head">
+        <p class="eyebrow">Step 1</p>
+        <h2 class="h">Resolution.</h2>
+        <p class="sub">From “hg38” to an exact assembly, before a single byte is downloaded.</p>
+      </div>
+    </div>
+
+    <div class="body-row">
+      <ul class="points">
+        <li><span class="marker">↳</span><span><span class="b">Queries the three big providers.</span> Ensembl, UCSC, NCBI. Whichever matches first wins — or all of them, if you leave provider blank.</span></li>
+        <li><span class="marker">↳</span><span><span class="b">Interactive on ambiguity.</span> Multiple matches for “mouse”? You pick once. The choice is written to disk.</span></li>
+        <li><span class="marker">↳</span><span><span class="b">Cached forever.</span> A second run skips the network for anything already pinned in <span class="mono">requests_resolved.csv</span>.</span></li>
+        <li><span class="marker">↳</span><span><span class="b">Reversible.</span> Want a different assembly? Delete that one row and the wizard re-prompts.</span></li>
+      </ul>
+
+      <div>
+        <h3 style="font-family:var(--font-mono);font-size:var(--type-eyebrow);letter-spacing:.14em;text-transform:uppercase;color:var(--muted);margin:0 0 18px 0">requests_raw.csv</h3>
+        <pre class="code"><span class="c"># species, query, provider, annotation, aliases</span>
+<span class="p">Homo_sapiens</span>,<span class="s">grch38</span>,<span class="a">ensembl</span>,<span class="k">true</span>,<span class="s">hg38;human</span>
+<span class="p">Mus_musculus</span>,<span class="s">mouse</span>,,<span class="k">true</span>,<span class="s">mm39;mm</span>
+<span class="p">Saccharomyces_cerevisiae</span>,<span class="s">sacCer3</span>,<span class="a">ucsc</span>,<span class="k">false</span>,<span class="s">yeast</span></pre>
+        <p class="muted" style="font-size:24px;font-family:var(--font-mono);margin-top:18px">Empty provider ⇒ search them all. Semicolons in aliases.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================================================
+       SLIDE 8 — Step 2 Download
+       ============================================================ -->
+  <section data-label="08 Step 2 Download" class="s-step">
+    <div class="chrome chrome-top"><span><span class="dot"></span>refdata-flow</span><span>08 / 15</span></div>
+
+    <div class="head">
+      <div class="step-num">02</div>
+      <div class="step-head">
+        <p class="eyebrow">Step 2</p>
+        <h2 class="h">Download.</h2>
+        <p class="sub">One Nextflow process, one genomepy job per row, fanned out across the cluster.</p>
+      </div>
+    </div>
+
+    <div class="body-row">
+      <ul class="points">
+        <li><span class="marker">↳</span><span><span class="b">Native parallelism.</span> Each resolved row is its own conda-isolated job; Nextflow handles scheduling.</span></li>
+        <li><span class="marker">↳</span><span><span class="b">Always compressed.</span> <span class="mono">bgzip</span>-encoded FASTA and GTF land directly — no intermediate decompression.</span></li>
+        <li><span class="marker">↳</span><span><span class="b">Resume-safe.</span> Re-run after adding one species; only that species moves.</span></li>
+        <li><span class="marker">↳</span><span><span class="b">Provenance per dataset.</span> Each output ships with <span class="mono">README.txt</span> and a custom <span class="mono">provenance.json</span>.</span></li>
+      </ul>
+
+      <div>
+        <h3 style="font-family:var(--font-mono);font-size:var(--type-eyebrow);letter-spacing:.14em;text-transform:uppercase;color:var(--muted);margin:0 0 18px 0">main.nf · the only process</h3>
+        <pre class="code"><span class="k">process</span> <span class="p">FETCH_GENOME</span> {
+    <span class="a">tag</span>        <span class="s">"${species}_${assembly}"</span>
+    <span class="a">publishDir</span> <span class="s">"${outdir}/${provider}/${species}"</span>
+
+    <span class="k">input:</span>
+      <span class="p">tuple val(species), val(assembly),</span>
+            <span class="p">val(provider), val(annotation)</span>
+
+    <span class="k">script:</span>
+    <span class="s">"""
+    python3 bin/download.py \
+      --species "${species}" --assembly "${assembly}" \
+      --provider "${provider}" ${annotation_flag}
+    """</span>
+}</pre>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================================================
+       SLIDE 9 — Step 3 Ingest
+       ============================================================ -->
+  <section data-label="09 Step 3 Refgenie ingestion" class="s-step">
+    <div class="chrome chrome-top"><span><span class="dot"></span>refdata-flow</span><span>09 / 15</span></div>
+
+    <div class="head">
+      <div class="step-num">03</div>
+      <div class="step-head">
+        <p class="eyebrow">Step 3</p>
+        <h2 class="h">Refgenie ingestion.</h2>
+        <p class="sub">Where loose downloads become a content-addressed, alias-rich, permanent vault.</p>
+      </div>
+    </div>
+
+    <div class="body-row">
+      <ul class="points">
+        <li><span class="marker">↳</span><span><span class="b">Self-initialising.</span> First run? <span class="mono">refgenie init</span> happens automatically.</span></li>
+        <li><span class="marker">↳</span><span><span class="b">Cryptographic hashes.</span> <span class="mono">refgenie build</span> reads every base, computes a Refget hash, stores by hash.</span></li>
+        <li><span class="marker">↳</span><span><span class="b">Aliases as symlinks.</span> Your CSV aliases — <span class="mono">hg38</span>, <span class="mono">human</span> — become first-class lookup paths.</span></li>
+        <li><span class="marker">↳</span><span><span class="b">Zero-duplication cleanup.</span> Once the vault has the bytes, the Nextflow staging copy is removed.</span></li>
+      </ul>
+
+      <div>
+        <h3 style="font-family:var(--font-mono);font-size:var(--type-eyebrow);letter-spacing:.14em;text-transform:uppercase;color:var(--muted);margin:0 0 18px 0">what gets written</h3>
+        <pre class="code"><span class="c"># content-addressed vault</span>
+data/<span class="a">2230c53b…</span>/fasta/default/GRCh38.p14.fa.gz
+data/<span class="a">2230c53b…</span>/annotation/default/…gtf.gz
+
+<span class="c"># human-readable shortcuts</span>
+alias/<span class="s">GRCh38.p14</span>/  →  data/<span class="a">2230c53b…</span>/
+alias/<span class="s">grch38</span>/      →  alias/GRCh38.p14/
+alias/<span class="s">hg38</span>/        →  alias/GRCh38.p14/
+alias/<span class="s">human</span>/       →  alias/GRCh38.p14/</pre>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================================================
+       SLIDE 10 — one command
+       ============================================================ -->
+  <section data-label="10 One command end to end" class="s-step s-run">
+    <div class="chrome chrome-top"><span><span class="dot"></span>refdata-flow</span><span>10 / 15</span></div>
+
+    <p class="eyebrow">From the user side</p>
+    <h2 class="slide-title">One command, end to end.</h2>
+
+    <p class="lead">Edit a CSV, run the wrapper, point it at storage. Everything else is automatic.</p>
+
+    <div class="two">
+      <div class="col">
+        <h3>typical run</h3>
+        <pre class="code"><span class="c"># 1. edit requests_raw.csv with the species you want</span>
+
+<span class="c"># 2. launch end-to-end on the HPC</span>
+<span class="k">bash</span> run_pipeline.sh requests_raw.csv \
+     <span class="a">--outdir</span> <span class="s">/reference_data/</span>
+
+<span class="c"># resolver → nextflow → refgenie, all in one go</span></pre>
+      </div>
+
+      <div class="col">
+        <h3>useful flags</h3>
+        <ul class="flags">
+          <li><span class="f">--dry-run</span><span class="d">Resolve and report. Touch no genomes.</span></li>
+          <li><span class="f">--clean</span><span class="d">Sweep <span class="mono">work/</span>, <span class="mono">.nextflow/</span>, logs. Vault untouched.</span></li>
+          <li><span class="f">--outdir &lt;path&gt;</span><span class="d">Override the destination. Defaults to <span class="mono">data/references</span>.</span></li>
+          <li><span class="f">--version</span><span class="d">Print the build &amp; exit.</span></li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================================================
+       SLIDE 11 — output structure
+       ============================================================ -->
+  <section data-label="11 Where data lands" class="s-out">
+    <div class="chrome chrome-top"><span><span class="dot"></span>refdata-flow</span><span>11 / 15</span></div>
+
+    <p class="eyebrow">What you end up with</p>
+    <h2 class="slide-title">Two halves: a vault, and human names.</h2>
+
+    <div class="row">
+      <pre class="tree"><span class="c">/reference_data/</span>
+├── <span class="accent">data/</span>                       <span class="c"># content-addressed</span>
+│   ├── <span class="hash">2230c53b…</span>/              <span class="c"># Human</span>
+│   │   ├── fasta/GRCh38.p14.fa.gz
+│   │   └── annotation/GRCh38.p14.gtf.gz
+│   └── <span class="hash">b88a9121…</span>/              <span class="c"># Mouse</span>
+│       ├── fasta/GRCm39.fa.gz
+│       └── annotation/GRCm39.gtf.gz
+│
+└── <span class="accent">alias/</span>                      <span class="c"># readable shortcuts</span>
+    ├── GRCh38.p14/  <span class="arrow">→</span> data/<span class="hash">2230c53b…</span>/
+    ├── grch38/      <span class="arrow">→</span> alias/GRCh38.p14/
+    └── hg38/        <span class="arrow">→</span> alias/GRCh38.p14/</pre>
+
+      <ul class="points">
+        <li><span class="marker">↳</span><span><span class="b">The vault is the truth.</span> Files keyed by Refget hash. Bytes never move once written.</span></li>
+        <li><span class="marker">↳</span><span><span class="b">Aliases are the doorway.</span> Official names, CSV queries, and custom aliases all resolve to the same vault entry.</span></li>
+        <li><span class="marker">↳</span><span><span class="b">Multiple ways in, one source.</span> Three users asking for <span class="mono">hg38</span>, <span class="mono">grch38</span>, <span class="mono">GRCh38.p14</span> — all point at the same physical file.</span></li>
+        <li><span class="marker">↳</span><span><span class="b">Per-dataset provenance.</span> A <span class="mono">README.txt</span> and <span class="mono">provenance.json</span> sit alongside each entry.</span></li>
+      </ul>
+    </div>
+  </section>
+
+  <!-- ============================================================
+       SLIDE 12 — storage discipline
+       ============================================================ -->
+  <section data-label="12 Storage discipline" class="s-storage">
+    <div class="chrome chrome-top"><span><span class="dot"></span>refdata-flow</span><span>12 / 15</span></div>
+
+    <p class="eyebrow">On disk</p>
+    <h2 class="slide-title">Storage stays lean by design.</h2>
+
+    <div class="row">
+      <div class="col">
+        <div>
+          <div class="marker">01 — Always compressed</div>
+          <div class="h">bgzip end&#8209;to&#8209;end.</div>
+          <div class="d">Genomes never sit uncompressed on disk. Genomepy writes <span class="mono">.fa.gz</span> / <span class="mono">.gtf.gz</span> natively.</div>
+        </div>
+        <div class="tag">~3 GB → ~900 MB per human genome</div>
+      </div>
+      <div class="col">
+        <div>
+          <div class="marker">02 — Resume, don’t redo</div>
+          <div class="h">Nextflow remembers everything.</div>
+          <div class="d">Add one species to the CSV next month; only that one runs. The other nine are skipped instantly.</div>
+        </div>
+        <div class="tag">-resume is on by default</div>
+      </div>
+      <div class="col">
+        <div>
+          <div class="marker">03 — One copy, not two</div>
+          <div class="h">Staging is cleared after ingest.</div>
+          <div class="d">Once refgenie has the bytes in the hash vault, the Nextflow staging directory is removed.</div>
+        </div>
+        <div class="tag">--clean wipes work/ &amp; logs on demand</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================================================
+       SLIDE 13 — cryptographic reproducibility
+       ============================================================ -->
+  <section data-label="13 Cryptographic reproducibility" class="s-hash">
+    <div class="chrome chrome-top"><span><span class="dot"></span>refdata-flow</span><span>13 / 15</span></div>
+
+    <p class="eyebrow">The headline feature</p>
+    <h2 class="slide-title">A fingerprint for every genome.</h2>
+
+    <p class="quote">A Refget hash — <span class="key">2230c53b…</span> — is a mathematical signature of the sequence itself. Not a filename. Not a URL. Not a version string. <span class="serif-italic" style="color:var(--accent)">The bytes.</span></p>
+
+    <div class="bottom">
+      <div>
+        <div class="k">What it gives you</div>
+        <div class="v">Two researchers, two HPCs, identical FASTA — identical hash. Mismatched hash means mismatched data, end of discussion.</div>
+      </div>
+      <div>
+        <div class="k">Why it matters</div>
+        <div class="v">A paper can cite the hash. A reviewer five years later can verify the exact sequence used — the closest genomics has to a DOI for data.</div>
+      </div>
+      <div>
+        <div class="k">How it’s computed</div>
+        <div class="v">Refgenie v3 reads every base on ingest, applies the GA4GH Refget standard, and stores the result in the vault index.</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================================================
+       SLIDE 14 — status & roadmap
+       ============================================================ -->
+  <section data-label="14 Status and roadmap" class="s-status">
+    <div class="chrome chrome-top"><span><span class="dot"></span>refdata-flow</span><span>14 / 15</span></div>
+
+    <p class="eyebrow">Status</p>
+    <h2 class="slide-title">Where we are, where we’re going.</h2>
+
+    <div class="grid">
+      <div class="now">
+        <div class="tag">Shipping now · v0.9 β</div>
+        <div class="v">Live on the ARC HPC.</div>
+        <ul>
+          <li><span class="tick">✓</span><span>Full Refgenie v3 integration</span></li>
+          <li><span class="tick">✓</span><span>Cryptographic Refget hashing</span></li>
+          <li><span class="tick">✓</span><span>Ensembl, UCSC, NCBI providers</span></li>
+          <li><span class="tick">✓</span><span>Interactive resolver with caching</span></li>
+          <li><span class="tick">✓</span><span>Dry-run, clean, resume flags</span></li>
+          <li><span class="tick">✓</span><span>User guide (Markdown + DOCX)</span></li>
+        </ul>
+      </div>
+
+      <div class="next">
+        <h4>Roadmap</h4>
+        <ul>
+          <li><span class="when">Next</span><span>More providers — GENCODE, RefSeq direct, custom builds</span></li>
+          <li><span class="when">Then</span><span>Variation data (VCFs, dbSNP, ClinVar) alongside sequence</span></li>
+          <li><span class="when">Then</span><span>Thin CLI to query the vault from any pipeline</span></li>
+          <li><span class="when">Later</span><span>Shared lab-wide vault as default reference infrastructure</span></li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================================================
+       SLIDE 15 — CTA
+       ============================================================ -->
+  <section data-label="15 Try it" class="s-cta">
+    <div class="chrome chrome-top"><span><span class="dot"></span>refdata-flow</span><span>15 / 15</span></div>
+
+    <p class="eyebrow">Two asks</p>
+    <h2 class="big">Try it on ARC. <span class="accent">Then tell us what’s missing.</span></h2>
+
+    <div class="ask">
+      <div class="item">
+        <div class="n">01 · Use it</div>
+        <div class="h">It’s live on the ARC HPC.</div>
+        <div class="d">User guide is in the repo. Pipeline runs from one command. Point it at your scratch and go.</div>
+      </div>
+      <div class="item">
+        <div class="n">02 · Request data</div>
+        <div class="h">The CSV is meant to grow.</div>
+        <div class="d">Non-model organism? Custom build? Specific annotation release? Open a request — we’ll add it.</div>
+      </div>
+    </div>
+
+    <div class="builton">
+      <div class="label">Built on</div>
+      <div class="logos">
+        <img src="assets/nextflow-logo.png" alt="Nextflow">
+        <img class="ga4gh" src="assets/ga4gh-logo.png" alt="Global Alliance for Genomics &amp; Health">
+      </div>
+    </div>
+
+    <div class="foot">
+      <div><div class="k">Speaker</div><div class="v">Nicholas Owen · ARC</div></div>
+      <div><div class="k">Version</div><div class="v">v0.9 β · 2026-05-27</div></div>
+      <div><div class="k">Find it on</div><div class="v">ARC HPC · /reference_data/</div></div>
+    </div>
+  </section>
+
+</deck-stage>
+
+<script src="deck-stage.js"></script>
+<script type="text/babel" src="tweaks-panel.jsx"></script>
+<script type="text/babel" src="tweaks.jsx"></script>
+
+</body>
+</html>
