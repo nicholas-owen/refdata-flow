@@ -1,0 +1,172 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1960 1070" font-family="'Segoe UI',Helvetica,Arial,sans-serif">
+<rect width="1960" height="1070" fill="#fbfcfe"/>
+<text x="70.0" y="56.0" font-size="34" font-weight="800" text-anchor="start" fill="#1f4e79" font-family="'Segoe UI',Helvetica,Arial,sans-serif">
+<tspan x="70.0" dy="0">refdata-flow</tspan>
+</text>
+<text x="70.0" y="82.0" font-size="16" font-weight="500" text-anchor="start" fill="#868e96" font-family="'Segoe UI',Helvetica,Arial,sans-serif">
+<tspan x="70.0" dy="0">Reference-data provisioning pipeline — workflow map</tspan>
+</text>
+<text x="300.0" y="104.0" font-size="13" font-weight="700" text-anchor="middle" fill="#b4bbc6" font-family="'Segoe UI',Helvetica,Arial,sans-serif">
+<tspan x="300.0" dy="0">REQUEST  &amp;  RESOLVE</tspan>
+</text>
+<text x="845.0" y="104.0" font-size="13" font-weight="700" text-anchor="middle" fill="#b4bbc6" font-family="'Segoe UI',Helvetica,Arial,sans-serif">
+<tspan x="845.0" dy="0">PARALLEL  DOWNLOAD  ·  NEXTFLOW</tspan>
+</text>
+<text x="1370.0" y="104.0" font-size="13" font-weight="700" text-anchor="middle" fill="#b4bbc6" font-family="'Segoe UI',Helvetica,Arial,sans-serif">
+<tspan x="1370.0" dy="0">REFGENIE  INGEST  &amp;  HASHING</tspan>
+</text>
+<text x="1745.0" y="104.0" font-size="13" font-weight="700" text-anchor="middle" fill="#b4bbc6" font-family="'Segoe UI',Helvetica,Arial,sans-serif">
+<tspan x="1745.0" dy="0">VAULT  &amp;  HANDOFF</tspan>
+</text>
+<line x1="510" y1="116" x2="510" y2="1014" stroke="#eceef3" stroke-width="2"/>
+<line x1="1180" y1="116" x2="1180" y2="1014" stroke="#eceef3" stroke-width="2"/>
+<line x1="1560" y1="116" x2="1560" y2="1014" stroke="#eceef3" stroke-width="2"/>
+<path d="M 120.0 506.0 L 464.0 506.0 Q 480.0 506.0 491.3 494.7 L 674.7 311.3 Q 686.0 300.0 702.0 300.0 L 798.0 300.0 Q 814.0 300.0 825.3 311.3 L 1008.7 494.7 Q 1020.0 506.0 1036.0 506.0 L 1660.0 506.0" fill="none" stroke="#c2255c" stroke-width="9" stroke-linejoin="round" stroke-linecap="round"/>
+<path d="M 120.0 518.0 L 464.0 518.0 Q 480.0 518.0 491.3 506.7 L 650.7 347.3 Q 662.0 336.0 678.0 336.0 L 822.0 336.0 Q 838.0 336.0 849.3 347.3 L 1008.7 506.7 Q 1020.0 518.0 1036.0 518.0 L 1660.0 518.0" fill="none" stroke="#1c7ed6" stroke-width="9" stroke-linejoin="round" stroke-linecap="round"/>
+<path d="M 120.0 530.0 L 464.0 530.0 Q 480.0 530.0 491.3 541.3 L 642.7 692.7 Q 654.0 704.0 670.0 704.0 L 830.0 704.0 Q 846.0 704.0 857.3 692.7 L 1008.7 541.3 Q 1020.0 530.0 1036.0 530.0 L 1660.0 530.0" fill="none" stroke="#7048e8" stroke-width="9" stroke-linejoin="round" stroke-linecap="round"/>
+<path d="M 120.0 542.0 L 464.0 542.0 Q 480.0 542.0 491.3 553.3 L 666.7 728.7 Q 678.0 740.0 694.0 740.0 L 806.0 740.0 Q 822.0 740.0 833.3 728.7 L 1008.7 553.3 Q 1020.0 542.0 1036.0 542.0 L 1660.0 542.0" fill="none" stroke="#f08c00" stroke-width="9" stroke-linejoin="round" stroke-linecap="round"/>
+<path d="M 1090.0 491.0 L 1090.0 262.3 Q 1090.0 251.0 1098.0 243.0 L 1098.0 243.0 Q 1106.0 235.0 1117.3 235.0 L 1545.0 235.0" fill="none" stroke="#0ca678" stroke-width="9" stroke-linejoin="round" stroke-linecap="round"/>
+<path d="M 1675.0 524.0 L 1810.0 524.0" fill="none" stroke="#495057" stroke-width="8" stroke-linejoin="round" stroke-linecap="round"/>
+<path d="M 290 940 L 1290 940" fill="none" stroke="#495057" stroke-width="8" stroke-linejoin="round" stroke-linecap="round"/>
+<rect x="105" y="491" width="30" height="66" rx="15" fill="#ffffff" stroke="#212529" stroke-width="3.4"/>
+<text x="120.0" y="576.0" font-size="15" font-weight="600" text-anchor="middle" fill="#212529" font-family="'Segoe UI',Helvetica,Arial,sans-serif">
+<tspan x="120.0" dy="0">requests_raw.csv</tspan>
+<tspan x="120.0" dy="17">input requests</tspan>
+</text>
+<rect x="285" y="491" width="30" height="66" rx="15" fill="#ffffff" stroke="#212529" stroke-width="3.4"/>
+<text x="300.0" y="576.0" font-size="15" font-weight="600" text-anchor="middle" fill="#212529" font-family="'Segoe UI',Helvetica,Arial,sans-serif">
+<tspan x="300.0" dy="0">resolve.py</tspan>
+<tspan x="300.0" dy="17">search wizard</tspan>
+</text>
+<rect x="425" y="491" width="30" height="66" rx="15" fill="#ffffff" stroke="#212529" stroke-width="3.4"/>
+<text x="440.0" y="576.0" font-size="15" font-weight="600" text-anchor="middle" fill="#212529" font-family="'Segoe UI',Helvetica,Arial,sans-serif">
+<tspan x="440.0" dy="0">requests_resolved.csv</tspan>
+<tspan x="440.0" dy="17">cached ledger</tspan>
+</text>
+<circle cx="720" cy="300" r="9.5" fill="#ffffff" stroke="#c2255c" stroke-width="4.2"/>
+<text x="720.0" y="275.0" font-size="15" font-weight="600" text-anchor="middle" fill="#212529" font-family="'Segoe UI',Helvetica,Arial,sans-serif">
+<tspan x="720.0" dy="0">Ensembl</tspan>
+</text>
+<circle cx="720" cy="336" r="9.5" fill="#ffffff" stroke="#1c7ed6" stroke-width="4.2"/>
+<text x="720.0" y="374.0" font-size="15" font-weight="600" text-anchor="middle" fill="#212529" font-family="'Segoe UI',Helvetica,Arial,sans-serif">
+<tspan x="720.0" dy="0">UCSC</tspan>
+</text>
+<circle cx="720" cy="704" r="9.5" fill="#ffffff" stroke="#7048e8" stroke-width="4.2"/>
+<text x="720.0" y="679.0" font-size="15" font-weight="600" text-anchor="middle" fill="#212529" font-family="'Segoe UI',Helvetica,Arial,sans-serif">
+<tspan x="720.0" dy="0">NCBI · RefSeq</tspan>
+</text>
+<circle cx="720" cy="740" r="9.5" fill="#ffffff" stroke="#f08c00" stroke-width="4.2"/>
+<text x="720.0" y="778.0" font-size="15" font-weight="600" text-anchor="middle" fill="#212529" font-family="'Segoe UI',Helvetica,Arial,sans-serif">
+<tspan x="720.0" dy="0">GENCODE</tspan>
+</text>
+<rect x="1075" y="491" width="30" height="66" rx="15" fill="#ffffff" stroke="#212529" stroke-width="3.4"/>
+<text x="1090.0" y="576.0" font-size="15" font-weight="600" text-anchor="middle" fill="#212529" font-family="'Segoe UI',Helvetica,Arial,sans-serif">
+<tspan x="1090.0" dy="0">genomepy</tspan>
+<tspan x="1090.0" dy="17">install_genome</tspan>
+</text>
+<circle cx="1180" cy="235" r="9.5" fill="#ffffff" stroke="#0ca678" stroke-width="4.2"/>
+<text x="1180.0" y="211.0" font-size="15" font-weight="600" text-anchor="middle" fill="#212529" font-family="'Segoe UI',Helvetica,Arial,sans-serif">
+<tspan x="1180.0" dy="0">provenance.json</tspan>
+</text>
+<circle cx="1360" cy="235" r="9.5" fill="#ffffff" stroke="#0ca678" stroke-width="4.2"/>
+<text x="1360.0" y="211.0" font-size="15" font-weight="600" text-anchor="middle" fill="#212529" font-family="'Segoe UI',Helvetica,Arial,sans-serif">
+<tspan x="1360.0" dy="0">genomepy README</tspan>
+</text>
+<circle cx="1520" cy="235" r="9.5" fill="#ffffff" stroke="#0ca678" stroke-width="4.2"/>
+<text x="1520.0" y="211.0" font-size="15" font-weight="600" text-anchor="middle" fill="#212529" font-family="'Segoe UI',Helvetica,Arial,sans-serif">
+<tspan x="1520.0" dy="0">Refget digest</tspan>
+</text>
+<rect x="1275" y="491" width="30" height="66" rx="15" fill="#ffffff" stroke="#212529" stroke-width="3.4"/>
+<text x="1290.0" y="477.0" font-size="15" font-weight="600" text-anchor="middle" fill="#212529" font-family="'Segoe UI',Helvetica,Arial,sans-serif">
+<tspan x="1290.0" dy="0">refgenie build</tspan>
+</text>
+<rect x="1415" y="491" width="30" height="66" rx="15" fill="#ffffff" stroke="#212529" stroke-width="3.4"/>
+<text x="1430.0" y="576.0" font-size="15" font-weight="600" text-anchor="middle" fill="#212529" font-family="'Segoe UI',Helvetica,Arial,sans-serif">
+<tspan x="1430.0" dy="0">alias assignment</tspan>
+</text>
+<rect x="1505" y="501" width="30" height="46" rx="15" fill="#ffffff" stroke="#212529" stroke-width="3.4"/>
+<text x="1520.0" y="471.0" font-size="15" font-weight="600" text-anchor="middle" fill="#212529" font-family="'Segoe UI',Helvetica,Arial,sans-serif">
+<tspan x="1520.0" dy="0">cleanup</tspan>
+<tspan x="1520.0" dy="16">rmtree work/</tspan>
+</text>
+<rect x="1645" y="491" width="30" height="66" rx="15" fill="#ffffff" stroke="#212529" stroke-width="3.4"/>
+<text x="1660.0" y="576.0" font-size="15" font-weight="600" text-anchor="middle" fill="#212529" font-family="'Segoe UI',Helvetica,Arial,sans-serif">
+<tspan x="1660.0" dy="0">refgenie vault</tspan>
+<tspan x="1660.0" dy="17">genome_config.yaml</tspan>
+</text>
+<circle cx="1810" cy="524" r="9.5" fill="#ffffff" stroke="#495057" stroke-width="4.2"/>
+<text x="1810.0" y="489.0" font-size="15" font-weight="600" text-anchor="middle" fill="#212529" font-family="'Segoe UI',Helvetica,Arial,sans-serif">
+<tspan x="1810.0" dy="0">REFGENIE env →</tspan>
+<tspan x="1810.0" dy="16">rnaseq-flow &amp; nf-core</tspan>
+</text>
+<circle cx="340" cy="940" r="9.5" fill="#ffffff" stroke="#495057" stroke-width="4.2"/>
+<text x="340.0" y="918.0" font-size="14" font-weight="600" text-anchor="middle" fill="#212529" font-family="'Segoe UI',Helvetica,Arial,sans-serif">
+<tspan x="340.0" dy="0">venv setup</tspan>
+</text>
+<circle cx="640" cy="940" r="9.5" fill="#ffffff" stroke="#495057" stroke-width="4.2"/>
+<text x="640.0" y="918.0" font-size="14" font-weight="600" text-anchor="middle" fill="#212529" font-family="'Segoe UI',Helvetica,Arial,sans-serif">
+<tspan x="640.0" dy="0">--dry-run</tspan>
+</text>
+<circle cx="940" cy="940" r="9.5" fill="#ffffff" stroke="#495057" stroke-width="4.2"/>
+<text x="940.0" y="918.0" font-size="14" font-weight="600" text-anchor="middle" fill="#212529" font-family="'Segoe UI',Helvetica,Arial,sans-serif">
+<tspan x="940.0" dy="0">-resume</tspan>
+</text>
+<circle cx="1240" cy="940" r="9.5" fill="#ffffff" stroke="#495057" stroke-width="4.2"/>
+<text x="1240.0" y="918.0" font-size="14" font-weight="600" text-anchor="middle" fill="#212529" font-family="'Segoe UI',Helvetica,Arial,sans-serif">
+<tspan x="1240.0" dy="0">--clean</tspan>
+</text>
+<text x="1330.0" y="648.0" font-size="12.5" font-weight="500" text-anchor="middle" fill="#868e96" font-family="'Segoe UI',Helvetica,Arial,sans-serif">
+<tspan x="1330.0" dy="0">One provider is resolved per species. refgenie build computes a Refget digest, so the same sequence —</tspan>
+</text>
+<text x="1330.0" y="665.0" font-size="12.5" font-weight="500" text-anchor="middle" fill="#868e96" font-family="'Segoe UI',Helvetica,Arial,sans-serif">
+<tspan x="1330.0" dy="0">requested via any provider or human alias — deduplicates to a single physical file in the vault.</tspan>
+</text>
+<text x="290.0" y="995.0" font-size="13" font-weight="500" text-anchor="start" fill="#868e96" font-family="'Segoe UI',Helvetica,Arial,sans-serif">
+<tspan x="290.0" dy="0">Orchestration line — run_pipeline.sh chains resolve.py → Nextflow download → update_refgenie.</tspan>
+</text>
+<text x="290.0" y="1012.0" font-size="13" font-weight="500" text-anchor="start" fill="#868e96" font-family="'Segoe UI',Helvetica,Arial,sans-serif">
+<tspan x="290.0" dy="0">--dry-run stops after resolution · -resume skips completed downloads · --clean purges the work/ cache.</tspan>
+</text>
+<rect x="92" y="150" width="380" height="336" rx="14" fill="#ffffff" stroke="#dde2ea" stroke-width="2"/>
+<text x="114.0" y="184.0" font-size="18" font-weight="800" text-anchor="start" fill="#1f4e79" font-family="'Segoe UI',Helvetica,Arial,sans-serif">
+<tspan x="114.0" dy="0">Legend</tspan>
+</text>
+<line x1="116" y1="212" x2="162" y2="212" stroke="#c2255c" stroke-width="8" stroke-linecap="round"/>
+<text x="176.0" y="217.0" font-size="14" font-weight="500" text-anchor="start" fill="#212529" font-family="'Segoe UI',Helvetica,Arial,sans-serif">
+<tspan x="176.0" dy="0">Ensembl route — genome + annotation</tspan>
+</text>
+<line x1="116" y1="240" x2="162" y2="240" stroke="#1c7ed6" stroke-width="8" stroke-linecap="round"/>
+<text x="176.0" y="245.0" font-size="14" font-weight="500" text-anchor="start" fill="#212529" font-family="'Segoe UI',Helvetica,Arial,sans-serif">
+<tspan x="176.0" dy="0">UCSC route — genome assembly</tspan>
+</text>
+<line x1="116" y1="268" x2="162" y2="268" stroke="#7048e8" stroke-width="8" stroke-linecap="round"/>
+<text x="176.0" y="273.0" font-size="14" font-weight="500" text-anchor="start" fill="#212529" font-family="'Segoe UI',Helvetica,Arial,sans-serif">
+<tspan x="176.0" dy="0">NCBI · RefSeq route — genome assembly</tspan>
+</text>
+<line x1="116" y1="296" x2="162" y2="296" stroke="#f08c00" stroke-width="8" stroke-linecap="round"/>
+<text x="176.0" y="301.0" font-size="14" font-weight="500" text-anchor="start" fill="#212529" font-family="'Segoe UI',Helvetica,Arial,sans-serif">
+<tspan x="176.0" dy="0">GENCODE route — annotation (GTF)</tspan>
+</text>
+<line x1="116" y1="324" x2="162" y2="324" stroke="#0ca678" stroke-width="8" stroke-linecap="round"/>
+<text x="176.0" y="329.0" font-size="14" font-weight="500" text-anchor="start" fill="#212529" font-family="'Segoe UI',Helvetica,Arial,sans-serif">
+<tspan x="176.0" dy="0">Provenance &amp; audit branch</tspan>
+</text>
+<line x1="116" y1="352" x2="162" y2="352" stroke="#495057" stroke-width="8" stroke-linecap="round"/>
+<text x="176.0" y="357.0" font-size="14" font-weight="500" text-anchor="start" fill="#212529" font-family="'Segoe UI',Helvetica,Arial,sans-serif">
+<tspan x="176.0" dy="0">run_pipeline.sh orchestration line</tspan>
+</text>
+<rect x="126" y="379" width="26" height="26" rx="13" fill="#ffffff" stroke="#212529" stroke-width="3.2"/>
+<text x="176.0" y="397.0" font-size="14" font-weight="500" text-anchor="start" fill="#212529" font-family="'Segoe UI',Helvetica,Arial,sans-serif">
+<tspan x="176.0" dy="0">Interchange — shared by all providers</tspan>
+</text>
+<circle cx="139" cy="422" r="9.5" fill="#ffffff" stroke="#868e96" stroke-width="4.2"/>
+<text x="176.0" y="427.0" font-size="14" font-weight="500" text-anchor="start" fill="#212529" font-family="'Segoe UI',Helvetica,Arial,sans-serif">
+<tspan x="176.0" dy="0">Stop — single provider / source</tspan>
+</text>
+<text x="114.0" y="452.0" font-size="12" font-weight="500" text-anchor="start" fill="#868e96" font-family="'Segoe UI',Helvetica,Arial,sans-serif">
+<tspan x="114.0" dy="0">One provider resolved per species. Resolution runs on a</tspan>
+</text>
+<text x="114.0" y="467.0" font-size="12" font-weight="500" text-anchor="start" fill="#868e96" font-family="'Segoe UI',Helvetica,Arial,sans-serif">
+<tspan x="114.0" dy="0">login node; download and ingest run as batch jobs.</tspan>
+</text>
+</svg>

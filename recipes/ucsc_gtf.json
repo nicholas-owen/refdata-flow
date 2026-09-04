@@ -1,0 +1,19 @@
+{
+  "name": "ucsc_gtf",
+  "description": "GTF annotation as distributed by UCSC, stored verbatim. Named for its actual source so the vault does not claim a provenance it does not have: refgenie ships no UCSC GTF recipe, and filing a UCSC annotation under gencode_gtf would assert a GENCODE origin (GENCODE publishes human and mouse only). Like gencode_gtf this is a passthrough - it does not derive TSS or gene-body BEDs, because those transformations in ensembl_gtf assume Ensembl contig naming and attribute ordering and would corrupt UCSC input.",
+  "required_files": [
+    {
+      "key": "ucsc_gtf",
+      "description": "Annotation file in Gene Transfer Format (GTF) from UCSC"
+    }
+  ],
+  "required_assets": [],
+  "required_parameters": [],
+  "container": "databio/refgenie",
+  "assets": {
+    "ucsc_gtf": "{genome}.gtf.gz"
+  },
+  "command_list": [
+    "cp {ucsc_gtf} {asset_outfolder}/{genome}.gtf.gz"
+  ]
+}

@@ -1,0 +1,28 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+title: refdata-flow
+abstract: >-
+  A reproducible, automated workflow for downloading bioinformatics reference
+  datasets (genome FASTA and gene annotation GTF) for multiple species and
+  cataloguing them in a refgenie vault. Combines an interactive resolver for
+  turning generic queries into exact assemblies, a Nextflow pipeline that runs
+  the downloads in parallel via genomepy, and a post-processing step that
+  registers the results in refgenie with human-readable aliases.
+type: software
+authors:
+  - family-names: Owen
+    given-names: Nicholas
+    # orcid: "https://orcid.org/0000-0000-0000-0000"
+repository-code: "https://github.com/nicholas-owen/refdata-flow"
+url: "https://github.com/nicholas-owen/refdata-flow"
+license: GPL-3.0-or-later
+version: 0.9.1
+date-released: "2026-09-03"
+keywords:
+  - bioinformatics
+  - reference-genome
+  - nextflow
+  - refgenie
+  - genomepy
+  - reproducibility
+  - provenance

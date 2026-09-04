@@ -1,0 +1,8 @@
+# refdata-flow Python toolchain (top-level pins; see requirements.txt for the
+# fully-resolved, hash-locked set). genomepy = download engine, refgenie =
+# vault/hashing, pysam = bundled htslib that powers the samtools/bgzip shims,
+# pyyaml = used directly by bin/update_refgenie.py for alias editing.
+genomepy==0.16.4
+refgenie==0.13.0
+pysam==0.24.0
+pyyaml==6.0.2

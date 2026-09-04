@@ -1,0 +1,23 @@
+{
+  "name": "ensembl_gtf",
+  "description": "Ensembl GTF, TSS, and gene body annotation, with contig names left as Ensembl wrote them. This is refgenie's stock ensembl_gtf recipe with the two `sed 's/^/chr/'` calls removed. Upstream prepends 'chr' to the derived BEDs because those recipes feed pipelines that assume a UCSC- or GENCODE-named genome, i.e. the case where an Ensembl GTF is paired with a non-Ensembl FASTA. refdata-flow fetches the FASTA and the GTF from the same provider, so an Ensembl genome has contigs named 1/2/X/MT and the rewrite produced BEDs referencing chr1/chr2 that match nothing in the vault. The GTF itself is byte-identical to the stock recipe's; only ensembl_tss and ensembl_gene_body differ, and only in contig naming.",
+  "required_files": [
+    {
+      "key": "ensembl_gtf",
+      "description": "Annotation file in Gene Transfer Format (GTF) from Ensembl"
+    }
+  ],
+  "required_assets": [],
+  "required_parameters": [],
+  "container": "databio/refgenie",
+  "assets": {
+    "ensembl_gtf": "{genome}.gtf.gz",
+    "ensembl_tss": "{genome}_ensembl_TSS.bed",
+    "ensembl_gene_body": "{genome}_ensembl_gene_body.bed"
+  },
+  "command_list": [
+    "cp {ensembl_gtf} {asset_outfolder}/{genome}.gtf.gz",
+    "gzip -dcf {asset_outfolder}/{genome}.gtf.gz | grep 'exon_number \"1\";' | awk -v OFS='\t' '{{print $1, $4, $5, $20, $14, $7}}' | sed 's/\";//g' | sed 's/\"//g' | awk '{{if($6==\"+\"){{print $1\"\t\"$2+20\"\t\"$2+120\"\t\"$4\"\t\"$5\"\t\"$6}}else{{print $1\"\t\"$3-120\"\t\"$3-20\"\t\"$4\"\t\"$5\"\t\"$6}}}}' | LC_COLLATE=C sort -k1,1 -k2,2n -k4,4 -u > {asset_outfolder}/{genome}_ensembl_TSS.bed",
+    "gzip -dcf {asset_outfolder}/{genome}.gtf.gz | awk '$3 == \"gene\"' | awk -v OFS='\t' '{{print $1,$4,$5,$14,$6,$7}}' | sed 's/\";//g' | sed 's/\"//g' | awk '$4!=\"Metazoa_SRP\"' | awk '$4!=\"U3\"' | awk '$4!=\"7SK\"'  | awk '($3-$2)>200' | awk '{{if($6==\"+\"){{print $1\"\t\"$2+500\"\t\"$3\"\t\"$4\"\t\"$5\"\t\"$6}}else{{print $1\"\t\"$2\"\t\"$3-500\"\t\"$4\"\t\"$5\"\t\"$6}}}}' | awk '$3>$2' | LC_COLLATE=C sort -k4 -u > {asset_outfolder}/{genome}_ensembl_gene_body.bed"
+  ]
+}
