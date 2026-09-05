@@ -77,11 +77,17 @@ Dependency versions are pinned and hash-locked in `requirements.txt` for reprodu
 Edit the `requests_raw.csv` file to list the generic species you want. 
 Example `requests_raw.csv`:
 ```csv
-species,query,provider,annotation,aliases
-Homo_sapiens,grch38,ensembl,true,human
-Mus_musculus,mouse,,true,mm39;mm
+species,query,provider,annotation,aliases,release
+Homo_sapiens,grch38,ensembl,true,human,116
+Mus_musculus,mouse,,true,mm39;mm,
 ```
 *(Note: If you leave `provider` empty like for Mouse, it will search all providers. You can also supply multiple custom aliases separated by semicolons in the `aliases` column.)*
+
+> **`release` is optional, and only Ensembl can honour it.** Leave it empty to take whatever the provider currently publishes. Supplying it pins the download to that Ensembl release, and the request is checked before anything is fetched: the release must exist *and* must contain the assembly you asked for, so a typo or a release predating the assembly fails immediately with the valid alternatives listed.
+>
+> **It is rejected, not ignored, for other providers.** genomepy accepts a release for GENCODE, UCSC and NCBI and then silently downloads the current files anyway, which would record a version that was never used. A `release` on any provider but Ensembl therefore fails the row rather than running unpinned. UCSC cannot be pinned even in principle: it patches assemblies in place and builds annotations live from its MySQL server.
+>
+> The annotation version is **recorded either way**, pinned or not - see *Annotation release tagging* below.
 
 > **Aliases are labels, not conversions.** An alias is a second name for whatever you downloaded; it does not change the data. Aliasing an Ensembl assembly as `hg38` is legal and tempting, but `hg38` is UCSC's name and implies UCSC conventions: `chr1`, `chr2`, `chrM`. An Ensembl genome has contigs named `1`, `2`, `MT`, so `refgenie seek hg38/fasta` would hand a downstream tool exactly the naming it did not expect. Keep provider-specific nicknames for genomes from that provider.
 
@@ -179,7 +185,30 @@ refgenie organises the genomes under your `--outdir` into a vault keyed by a **s
 >
 > The collection digest additionally uses the legacy Henge serialisation (`name>length>sequence_digest`, comma-joined) rather than the form specified by Refget Sequence Collections v1.0.0. Note that it covers each record's **name and length as well as its sequence, in file order** - so the same assembly from two providers, or at two masking levels, is two vault entries. See `refgenconf/seqcol.py` as shipped with refgenie 0.13.0.
 >
-> The pipeline also does not pin the upstream provider release, so the same request re-run months later may resolve to newer files. Treat the digest as a reliable identifier for *the sequences in this vault*, not as a portable, standards-based fingerprint.
+> Treat the digest as a reliable identifier for *the sequences in this vault*, not as a portable, standards-based fingerprint.
+
+### Annotation release tagging
+
+The digest above covers the genome FASTA and nothing else. Two vaults with the same digest could therefore hold annotations from different releases, and `refgenie seek human/ensembl_gtf` would return a confident path either way. The annotation is tagged to close that gap.
+
+Each provider is tagged with the most specific stable identifier it actually publishes, so the vocabulary differs by design:
+
+| Provider | Tag | Source |
+|---|---|---|
+| Ensembl | release number, e.g. `116` | the release in the download URL |
+| GENCODE | release, e.g. `44` | the release in the download path |
+| NCBI | `YYYYMMDD` | the file's `Last-Modified` |
+| UCSC | `YYYYMMDD` | when UCSC last changed the annotation table |
+
+A date here is **upstream's** modification date, not the date you ran the pipeline, so re-running next year produces the same tag. The UCSC date comes from the MySQL table genomepy actually reads rather than from the published file dump, because the two disagree.
+
+Ingesting a newer release adds a tag rather than replacing one. The new release becomes what `refgenie seek <genome>/<asset>` returns, and the previous one stays reachable by naming it:
+
+```bash
+refgenie seek human/ensembl_gtf:115
+```
+
+If the release cannot be identified - an unreachable provider, say - the asset is tagged `default` and a warning is printed. Nothing fails, but two releases could later collide under that tag.
 
 ### Example Directory Structure
 

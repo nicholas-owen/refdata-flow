@@ -2,7 +2,7 @@
 
 The pipeline is now completely operational and ready for HPC deployment! Here is a breakdown of the architecture we built today.
 
-## 1. The Two-Step Architecture
+## 1. The Three-Step Architecture
 
 ### The 3-Step Execution
 1. **Resolution (`resolve.py`)**: Interactively searches Ensembl/UCSC/NCBI and binds `requests_raw.csv` to exact assemblies into a fast, cached `requests_resolved.csv` ledger.
@@ -10,12 +10,12 @@ The pipeline is now completely operational and ready for HPC deployment! Here is
 3. **Refgenie Ingestion (`update_refgenie.py`)**:
     - Sweeps over the Nextflow output directories.
     - Triggers `refgenie build` to parse, index, and compute immutable cryptographic hashes of the sequence data, storing them in the permanent `data/references/data/` vault.
-    - **Zero-Duplication Cleanup**: Instantly deletes the Nextflow temporary downloads (`shutil.rmtree`) to drastically save disk space.
-    - **Robust Aliasing**: Reads the custom `aliases` column from your CSV and uses Python's native `yaml` library to instantly and reliably inject all human-readable names (e.g. `grch38`, `hg38`) into the master config, completely bypassing Windows OS execution quirks!
+    - **Optional cleanup (`--cleanup`)**: Removes the Nextflow staging downloads once their contents are verified into the vault, to save disk space. Opt-in since 0.9.1: upstream providers archive old releases, so a deleted download may not be re-fetchable, and `provenance.json`, `README.txt` and `assembly_report.txt` are preserved to `<outdir>/provenance/` before anything is removed.
+    - **Robust Aliasing**: Reads the custom `aliases` column from your CSV and uses Python's native `yaml` library to instantly and reliably inject all human-readable names (e.g. `grch38`, `human`) into the master config, completely bypassing Windows OS execution quirks!
 
 ## 2. Strict Refgenie Hashes (`bin/update_refgenie.py`)
 
-To ensure absolute reproducibility when publishing papers, the pipeline integrates natively with **Refgenie v3**:
+To ensure absolute reproducibility when publishing papers, the pipeline integrates natively with **refgenie 0.13**:
 - **Automated Initialization**: It detects if the HPC has a config file yet, and automatically runs `refgenie init` if it's the very first run.
 - **Cryptographic Hashing**: It executes `refgenie build` on the downloaded FASTA and GTF files. This forces Refgenie to read every DNA letter, compute the globally-agreed **Refget hash** (e.g. `2230c53b...`), and ingest it into the secure `data/` vault.
 - **Human Aliases**: It applies the user's custom CSV queries (like `mouse`) as symlinked aliases so researchers don't have to memorize the hashes.

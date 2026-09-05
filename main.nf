@@ -34,7 +34,7 @@ process FETCH_GENOME {
     publishDir { "${params.outdir}/${provider}/${species}" }, mode: 'copy'
 
     input:
-    tuple val(species), val(assembly), val(provider), val(annotation)
+    tuple val(species), val(assembly), val(provider), val(annotation), val(release)
 
     output:
     path "${assembly}"
@@ -49,6 +49,16 @@ process FETCH_GENOME {
     // no user-supplied data is interpolated into it.
     def annotation_flag = annotation.toString().toLowerCase() == 'true' ? '--annotation' : ''
 
+    // release is optional, so it cannot go through safe(), whose pattern requires at
+    // least one character. Its allowlist is tighter than safe()'s in any case: only
+    // Ensembl can be pinned and Ensembl releases are integers, so digits only.
+    // bin/resolve.py has already rejected a release on an unpinnable provider; this
+    // is the injection guard, not the semantic check.
+    def rel = release?.toString()?.trim() ?: ''
+    if( rel && !(rel ==~ /^[0-9]+$/) )
+        error "Unsafe or non-numeric release: '${rel}'"
+    def release_flag = rel ? "--release ${rel}" : ''
+
     // download.py is called without an explicit path - Nextflow automatically adds
     // the project bin/ directory to PATH inside every process (fixes issue 3.1).
     """
@@ -56,14 +66,17 @@ process FETCH_GENOME {
         --species "${sp}" \\
         --assembly "${asm}" \\
         --provider "${prv}" \\
-        ${annotation_flag}
+        ${annotation_flag} \\
+        ${release_flag}
     """
 }
 
 workflow {
     Channel.fromPath(params.input)
         .splitCsv(header: true)
-        .map { row -> tuple(row.species, row.assembly, row.provider, row.annotation) }
+        // row.release is null when the column is absent, which is the unpinned case
+        // and must stay valid: older resolved CSVs predate the column.
+        .map { row -> tuple(row.species, row.assembly, row.provider, row.annotation, row.release ?: '') }
         .set { requests_ch }
 
     FETCH_GENOME(requests_ch)

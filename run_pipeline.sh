@@ -20,8 +20,9 @@ OUTDIR="data/references"
 DRY_RUN=0
 DEBUG=0
 CLEANUP=0
+NONINTERACTIVE=0
 
-USAGE="Usage: bash run_pipeline.sh [requests.csv] [--outdir /path/to/save] [--cleanup] [--clean] [--dry-run] [--debug] [--version]"
+USAGE="Usage: bash run_pipeline.sh [requests.csv] [--outdir /path/to/save] [--cleanup] [--non-interactive] [--clean] [--dry-run] [--debug] [--version]"
 
 # Parse command line arguments
 while [[ "$#" -gt 0 ]]; do
@@ -39,6 +40,12 @@ while [[ "$#" -gt 0 ]]; do
             ;;
         --debug)
             DEBUG=1
+            ;;
+        --non-interactive)
+            # Never prompt during resolution. A query matching more than one assembly
+            # is reported as unresolved instead, so an unattended run fails rather
+            # than hanging on stdin. The pipeline never auto-picks a genome.
+            NONINTERACTIVE=1
             ;;
         --cleanup)
             # Remove each downloaded source directory once its contents are verified
@@ -257,7 +264,11 @@ echo "[Step 1] Running interactive reference resolver..."
 # a user could ask for five genomes, receive three, and never be told. Stop here
 # instead: nothing has been downloaded yet, and the request CSV is the thing to fix.
 set +e
-"$VENV_DIR/bin/python" bin/resolve.py "$RAW_CSV" requests_resolved.csv
+RESOLVE_ARGS=("$RAW_CSV" requests_resolved.csv)
+if [ "$NONINTERACTIVE" -eq 1 ]; then
+    RESOLVE_ARGS+=(--non-interactive)
+fi
+"$VENV_DIR/bin/python" bin/resolve.py "${RESOLVE_ARGS[@]}"
 RESOLVE_RC=$?
 set -e
 if [ "$RESOLVE_RC" -eq 2 ]; then
@@ -278,7 +289,11 @@ if [ "$DRY_RUN" -eq 1 ]; then
     echo "  DRY RUN COMPLETE"
     echo "  The following datasets would be downloaded:"
     echo "=========================================="
-    "$VENV_DIR/bin/python" -c "import csv; [print(f'  - {r[\"species\"]}: {r[\"assembly\"]} (Provider: {r[\"provider\"]}, Annotations: {r[\"annotation\"]})') for r in csv.DictReader(open('requests_resolved.csv'))]"
+    # Release is shown because pinning it is the point of the dry run: 'current'
+    # means whatever the provider publishes on the day the download actually runs,
+    # which is not reproducible. .get() rather than [] so a resolved CSV written
+    # before the release column existed still prints.
+    "$VENV_DIR/bin/python" -c "import csv; [print(f'  - {r[\"species\"]}: {r[\"assembly\"]} (Provider: {r[\"provider\"]}, Annotations: {r[\"annotation\"]}, Release: {r.get(\"release\") or \"current\"})') for r in csv.DictReader(open('requests_resolved.csv'))]"
     echo "=========================================="
     echo "  Exiting without downloading."
     exit 0

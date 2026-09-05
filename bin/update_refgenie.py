@@ -6,6 +6,7 @@ import sys
 import os
 import csv
 import glob
+import json
 import logging
 import subprocess
 import shutil
@@ -23,6 +24,35 @@ import yaml
 #                         UCSC / Ensembl / GenBank accessions, needed later to
 #                         reconcile contig naming between a vault and an annotation
 PROVENANCE_FILES = ("provenance.json", "README.txt", "assembly_report.txt")
+
+
+def read_annotation_release(assembly_dir):
+    """
+    The annotation release recorded by bin/download.py, as (value, kind).
+
+    Used as the refgenie asset tag. The genome digest is computed from the FASTA
+    alone, so without a tag two annotation releases of the same assembly overwrite
+    one another under 'default' and `refgenie seek` returns a confident path to
+    whichever landed last.
+
+    download.py identifies the release because that is where README.txt and the
+    network are both available; this side only reads the result, so a vault can be
+    rebuilt from an existing download directory without any network access.
+
+    Returns (None, None) when the release could not be identified - the caller then
+    keeps refgenie's default tag rather than failing an otherwise good ingest.
+    """
+    path = os.path.join(assembly_dir, "provenance.json")
+    try:
+        with open(path) as fh:
+            data = json.load(fh)
+    except (OSError, ValueError):
+        # Absent for downloads made before release tagging existed, and unreadable
+        # is treated the same way: fall back rather than block the build.
+        return None, None
+
+    release = data.get("annotation_release")
+    return (release, data.get("annotation_release_kind")) if release else (None, None)
 
 # Which refgenie recipe registers an annotation from which provider.
 #
@@ -449,14 +479,23 @@ def process_assembly(row, outdir, config_file, refgenie_bin, query_map,
                 )
             elif gtf_files:
                 gtf_path = os.path.abspath(gtf_files[0])
+                release, release_kind = read_annotation_release(asm_dir)
+                # An unidentified release keeps refgenie's own default, which is the
+                # behaviour that existed before release tagging. The warning was
+                # already issued at download time, where the cause is known.
+                target = f"{assembly_safe}/{recipe_name}"
+                if release:
+                    target += f":{release}"
                 logger.info(
                     "Building GTF annotation digest in refgenie for '%s' (provider: %s, "
-                    "recipe: %s%s)", assembly_safe, provider, recipe_name,
-                    " [custom]" if recipe_file else ""
+                    "recipe: %s%s, tag: %s%s)", assembly_safe, provider, recipe_name,
+                    " [custom]" if recipe_file else "",
+                    release or "default",
+                    f" [{release_kind}]" if release_kind else " [release not identified]"
                 )
                 cmd = [
                     sys.executable, refgenie_bin, "build",
-                    f"{assembly_safe}/{recipe_name}",
+                    target,
                     "--files", f"{recipe_name}={gtf_path}",
                     "-c", config_file
                 ]
@@ -468,6 +507,29 @@ def process_assembly(row, outdir, config_file, refgenie_bin, query_map,
                 except subprocess.CalledProcessError as e:
                     logger.error("GTF build failed for '%s': %s", assembly, e)
                     problems.append(f"{assembly}: GTF build failed ({e})")
+
+                # Building a tag does NOT make it the default - verified against
+                # refgenie 0.13.0, where a second tag registers alongside the first
+                # and `refgenie seek <genome>/<asset>` keeps returning the older one.
+                # Without this step a newly ingested release would be present in the
+                # vault but invisible to every caller that does not name a tag, which
+                # is the opposite of the intended "latest wins, older stays reachable"
+                # behaviour. Not fatal: the asset is built and addressable by tag.
+                if gtf_registered and release:
+                    try:
+                        subprocess.run(
+                            [sys.executable, refgenie_bin, "tag",
+                             f"{assembly_safe}/{recipe_name}:{release}",
+                             "--default", "-c", config_file],
+                            check=True
+                        )
+                    except subprocess.CalledProcessError as e:
+                        logger.warning(
+                            "Built '%s/%s:%s' but could not make it the default tag: %s. "
+                            "The asset is addressable by tag; callers using no tag will "
+                            "still resolve to the previous release.",
+                            assembly_safe, recipe_name, release, e
+                        )
             else:
                 # Annotation was explicitly requested, so its absence is a failure of
                 # the run, not a cosmetic warning.
