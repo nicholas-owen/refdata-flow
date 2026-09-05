@@ -242,7 +242,7 @@ def preserve_provenance(asm_dir: str, outdir: str, provider: str, species: str,
 # Aliases
 # ---------------------------------------------------------------------------
 
-def merge_aliases(assembly, assembly_safe, species, query_map,
+def merge_aliases(assembly, assembly_safe, species, query, query_map,
                   custom_aliases_map, config_file, logger):
     """
     Merge this request's aliases into the digest's alias list in the refgenie config.
@@ -265,24 +265,56 @@ def merge_aliases(assembly, assembly_safe, species, query_map,
 
     aliases_to_set = set([assembly_safe, assembly, assembly.split(".")[0]])
 
-    raw_query = query_map.get(species)
+    # Look up by (species, query), so a species with more than one requested
+    # assembly gets each row's own aliases rather than the last row's.
+    key = (species, query)
+    raw_query = query_map.get(key)
     if raw_query:
         aliases_to_set.add(raw_query)
 
-    for ca in custom_aliases_map.get(species, []):
+    for ca in custom_aliases_map.get(key, []):
         aliases_to_set.add(ca)
 
     try:
         with open(config_file, "r") as f:
             config = yaml.safe_load(f)
 
+        # Resolve the digest from this assembly's OWN identifiers rather than from
+        # any overlap with aliases_to_set. Matching on overlap meant a custom alias
+        # shared between two rows - 'yeast' on both the UCSC and the Ensembl yeast,
+        # say - resolved to whichever digest was written first, and this row's
+        # aliases were then merged onto the wrong genome.
+        own_names = {assembly_safe, assembly, assembly.split(".")[0]}
         target_digest = None
+        alias_owner = {}
         if "genomes" in config:
             for digest, data in config["genomes"].items():
-                existing_aliases = data.get("aliases", [])
-                if any(a in existing_aliases for a in aliases_to_set):
+                existing_aliases = data.get("aliases", []) or []
+                for existing in existing_aliases:
+                    alias_owner[existing] = digest
+                if target_digest is None and any(a in existing_aliases for a in own_names):
                     target_digest = digest
-                    break
+
+        # An alias names exactly one genome. If one of ours already belongs to a
+        # different digest, taking it would silently repoint it - so report it and
+        # leave it where it is. The rest of this row's aliases still apply.
+        if target_digest:
+            conflicts = sorted(
+                a for a in aliases_to_set
+                if alias_owner.get(a) not in (None, target_digest)
+            )
+            if conflicts:
+                logger.error(
+                    "Alias(es) %s already name a different genome, so they were NOT "
+                    "applied to '%s'. An alias cannot point at two assemblies; give "
+                    "this row its own alias in the request CSV.",
+                    ", ".join(f"'{c}'" for c in conflicts), assembly
+                )
+                problems.append(
+                    f"{assembly}: alias(es) {', '.join(conflicts)} already belong to "
+                    "another genome and were not applied"
+                )
+                aliases_to_set -= set(conflicts)
 
         if target_digest:
             current_aliases = config["genomes"][target_digest].get("aliases", [])
@@ -376,6 +408,11 @@ def process_assembly(row, outdir, config_file, refgenie_bin, query_map,
     assembly   = (row.get("assembly")   or "").strip()
     provider   = (row.get("provider")   or "").strip()
     annotation = (row.get("annotation") or "false").strip().lower() == "true"
+    # Identifies which raw request produced this row, so its aliases can be looked
+    # up without colliding with another assembly of the same species. Absent from
+    # resolved CSVs written before the column existed, which degrades to the old
+    # behaviour for that row rather than failing.
+    query      = (row.get("query")      or "").strip()
 
     logger.info("Processing %s...", assembly)
 
@@ -436,7 +473,7 @@ def process_assembly(row, outdir, config_file, refgenie_bin, query_map,
         # -------------------------------------------------------
         if fasta_registered:
             problems.extend(merge_aliases(
-                assembly, assembly_safe, species, query_map,
+                assembly, assembly_safe, species, query, query_map,
                 custom_aliases_map, config_file, logger
             ))
             aliases_merged = True
@@ -599,7 +636,7 @@ def process_assembly(row, outdir, config_file, refgenie_bin, query_map,
     # -----------------------------------------------------------
     if not aliases_merged:
         problems.extend(merge_aliases(
-            assembly, assembly_safe, species, query_map,
+            assembly, assembly_safe, species, query, query_map,
             custom_aliases_map, config_file, logger
         ))
 
@@ -647,7 +684,20 @@ def main():
             check=True
         )
 
-    # Map generic raw queries to exact species and collect custom aliases
+    # Map each raw request to its custom aliases.
+    #
+    # Keyed by (species, query), NOT by species alone. Keying on species meant the
+    # last row for a species overwrote every earlier one, so two assemblies of the
+    # same species - Saccharomyces_cerevisiae as both UCSC sacCer3 and Ensembl
+    # R64-1-1, say - collapsed into one entry. The consequences were silent and
+    # severe: the second row's aliases were applied to the first row's digest, which
+    # bound 'R64-1-1' to the UCSC genome; refgenie then resolved R64-1-1/fasta to
+    # that digest, skipped the build because the flag already existed, and filed the
+    # Ensembl annotation under a UCSC assembly. The run still exited 0.
+    #
+    # (species, query) is the right key because query is what distinguishes two rows
+    # of the same species, and bin/resolve.py carries it into the resolved CSV - so
+    # the row being ingested can look up exactly the request that produced it.
     query_map          = {}
     custom_aliases_map = {}
     try:
@@ -657,11 +707,11 @@ def main():
                 sp          = (row.get("species") or "").strip()
                 q           = (row.get("query") or "").strip()
                 aliases_str = (row.get("aliases") or "").strip()
-                if sp:
-                    if q:
-                        query_map[sp] = q
+                if sp and q:
+                    key = (sp, q)
+                    query_map[key] = q
                     if aliases_str:
-                        custom_aliases_map[sp] = [
+                        custom_aliases_map[key] = [
                             a.strip() for a in aliases_str.split(";") if a.strip()
                         ]
     except Exception as e:
