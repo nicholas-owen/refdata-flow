@@ -5,7 +5,7 @@ The pipeline is now completely operational and ready for HPC deployment! Here is
 ## 1. The Three-Step Architecture
 
 ### The 3-Step Execution
-1. **Resolution (`resolve.py`)**: Interactively searches Ensembl/UCSC/NCBI and binds `requests_raw.csv` to exact assemblies into a fast, cached `requests_resolved.csv` ledger.
+1. **Resolution (`resolve.py`)**: Interactively searches Ensembl/UCSC/NCBI and binds `requests/requests_raw.csv` to exact assemblies into a fast, cached `requests/requests_resolved.csv` ledger.
 2. **Download (`Nextflow`)**: Mass-parallelizes Conda-based `genomepy` jobs to heavily compress and download the `fasta` and `gtf` files into temporary, provider-specific staging directories.
 3. **Refgenie Ingestion (`update_refgenie.py`)**:
     - Sweeps over the Nextflow output directories.
@@ -42,7 +42,7 @@ $ bash run_pipeline.sh --dry-run
 --- Species 'Homo_sapiens' already resolved to GRCh38.p14. Skipping search. ---
 --- Species 'Mus_musculus' already resolved to GRCm39. Skipping search. ---
 --- Species 'Saccharomyces_cerevisiae' already resolved to sacCer3. Skipping search. ---
-Successfully resolved 3 requests. Written to requests_resolved.csv.
+Successfully resolved 3 requests. Written to requests/requests_resolved.csv.
 
 ==========================================
   DRY RUN COMPLETE

@@ -72,7 +72,25 @@ process FETCH_GENOME {
 }
 
 workflow {
-    Channel.fromPath(params.input)
+    // checkIfExists turns a wrong --input into an immediate, readable error. Without
+    // it fromPath fails in two different unhelpful ways, both verified against
+    // Nextflow 26.04:
+    //
+    //   * a literal path that does not exist is emitted anyway, so the channel holds
+    //     one entry pointing at nothing and the run dies later inside splitCsv with a
+    //     NoSuchFileException that names neither the parameter nor the cause;
+    //   * a pattern that matches nothing yields an EMPTY channel, so no FETCH_GENOME
+    //     task is created and the run exits 0 having downloaded not one genome.
+    //
+    // The second is the dangerous one: success is indistinguishable from doing
+    // nothing. With the flag, both become "No files match pattern ..." before any
+    // work starts.
+    //
+    // The smoke test cannot catch either: --dry-run exits before Nextflow is reached,
+    // and `nextflow lint` is static analysis that never resolves a path. So the CI
+    // guarding the rest of the request-file plumbing would sail straight past this,
+    // which is what makes the flag load-bearing rather than decorative.
+    channel.fromPath(params.input, checkIfExists: true)
         .splitCsv(header: true)
         // row.release is null when the column is absent, which is the unpinned case
         // and must stay valid: older resolved CSVs predate the column.

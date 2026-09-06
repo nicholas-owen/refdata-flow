@@ -15,7 +15,18 @@ echo ""
 
 VERSION="0.9.1"
 
-RAW_CSV="requests_raw.csv"
+# Request files live in requests/ so the repo root stays readable, and so the two
+# halves of a request - what you asked for, and which assemblies that resolved to -
+# sit together. The resolved CSV is not a throwaway build product: bin/resolve.py
+# reads it back as its cache, and it records the one scientific choice in the
+# pipeline (which assembly), so it must not live anywhere a cleanup could sweep it.
+#
+# Neither is tracked. RAW_CSV is yours to edit and would otherwise collide with
+# every `git pull`; TEMPLATE_CSV is the tracked starting point copied into place on
+# a first run. See .gitignore.
+RAW_CSV="requests/requests_raw.csv"
+RESOLVED_CSV="requests/requests_resolved.csv"
+TEMPLATE_CSV="requests/requests_raw.csv.example"
 OUTDIR="data/references"
 DRY_RUN=0
 DEBUG=0
@@ -253,7 +264,28 @@ VENV_BIN="$(cd "$VENV_DIR/bin" && pwd)"
 export PATH="$VENV_BIN:$PATH"
 
 if [ ! -f "$RAW_CSV" ]; then
+    # First run: seed the request file from the tracked template, then stop. Copying
+    # and carrying straight on would download whatever the template happens to list,
+    # which is not what someone who has not written a request yet is asking for.
+    if [ "$RAW_CSV" = "requests/requests_raw.csv" ] && [ -f "$TEMPLATE_CSV" ]; then
+        mkdir -p requests
+        cp "$TEMPLATE_CSV" "$RAW_CSV"
+        echo "=========================================="
+        echo "  Created $RAW_CSV from the template."
+        echo ""
+        echo "  Edit it to list the genomes you want, then re-run. It is not"
+        echo "  tracked by git, so your list will not collide with updates."
+        echo "=========================================="
+        exit 0
+    fi
     echo "Error: Cannot find $RAW_CSV!"
+    # Requests moved into requests/ after 0.9.1. Say so rather than reporting a bare
+    # not-found, and do not silently read the old path - that would make the run do
+    # something other than what the docs describe.
+    if [ -f "requests_raw.csv" ]; then
+        echo "Note: found requests_raw.csv in the repo root. Request files now live"
+        echo "      in requests/. Move it with: mkdir -p requests && git mv requests_raw.csv $RAW_CSV"
+    fi
     echo "$USAGE"
     exit 1
 fi
@@ -264,7 +296,7 @@ echo "[Step 1] Running interactive reference resolver..."
 # a user could ask for five genomes, receive three, and never be told. Stop here
 # instead: nothing has been downloaded yet, and the request CSV is the thing to fix.
 set +e
-RESOLVE_ARGS=("$RAW_CSV" requests_resolved.csv)
+RESOLVE_ARGS=("$RAW_CSV" "$RESOLVED_CSV")
 if [ "$NONINTERACTIVE" -eq 1 ]; then
     RESOLVE_ARGS+=(--non-interactive)
 fi
@@ -276,7 +308,7 @@ if [ "$RESOLVE_RC" -eq 2 ]; then
     echo "=========================================="
     echo "  Stopping: some requests could not be resolved (see above)."
     echo "  Fix or remove those rows in $RAW_CSV and re-run."
-    echo "  Requests that did resolve have been saved to requests_resolved.csv."
+    echo "  Requests that did resolve have been saved to $RESOLVED_CSV."
     echo "=========================================="
     exit 2
 elif [ "$RESOLVE_RC" -ne 0 ]; then
@@ -293,7 +325,11 @@ if [ "$DRY_RUN" -eq 1 ]; then
     # means whatever the provider publishes on the day the download actually runs,
     # which is not reproducible. .get() rather than [] so a resolved CSV written
     # before the release column existed still prints.
-    "$VENV_DIR/bin/python" -c "import csv; [print(f'  - {r[\"species\"]}: {r[\"assembly\"]} (Provider: {r[\"provider\"]}, Annotations: {r[\"annotation\"]}, Release: {r.get(\"release\") or \"current\"})') for r in csv.DictReader(open('requests_resolved.csv'))]"
+    #
+    # The path comes in as sys.argv[1], not interpolated into this string: the
+    # snippet is already three levels of nested quoting deep, and a shell variable
+    # inside it is how that becomes unreadable and then wrong.
+    "$VENV_DIR/bin/python" -c "import csv, sys; [print(f'  - {r[\"species\"]}: {r[\"assembly\"]} (Provider: {r[\"provider\"]}, Annotations: {r[\"annotation\"]}, Release: {r.get(\"release\") or \"current\"})') for r in csv.DictReader(open(sys.argv[1]))]" "$RESOLVED_CSV"
     echo "=========================================="
     echo "  Exiting without downloading."
     exit 0
@@ -304,7 +340,11 @@ echo "[Step 2] Launching Nextflow pipeline..."
 # Assemble Nextflow arguments. --debug streams each task's progress messages to
 # the console (process `debug`); -ansi-log false makes that streamed output
 # readable instead of being repainted over by the single-line status display.
-NF_ARGS="-profile conda --outdir $OUTDIR -resume"
+# --input is passed explicitly rather than left to nextflow.config's default. The
+# wrapper and the config each held their own copy of this path, agreeing only by
+# coincidence; passing it here makes the wrapper authoritative and leaves the config
+# default for a bare `nextflow run main.nf`.
+NF_ARGS="-profile conda --input $RESOLVED_CSV --outdir $OUTDIR -resume"
 if [ "$DEBUG" -eq 1 ]; then
     echo "[Step 2] Debug mode: streaming per-task download progress."
     NF_ARGS="$NF_ARGS --debug true -ansi-log false"
@@ -314,7 +354,7 @@ nextflow run main.nf $NF_ARGS
 
 echo ""
 echo "[Step 3] Building Refgenie Configuration..."
-REFGENIE_ARGS=("$RAW_CSV" requests_resolved.csv "$OUTDIR")
+REFGENIE_ARGS=("$RAW_CSV" "$RESOLVED_CSV" "$OUTDIR")
 if [ "$CLEANUP" -eq 1 ]; then
     echo "[Step 3] --cleanup: verified source directories will be removed after ingest."
     REFGENIE_ARGS+=(--cleanup)

@@ -1,0 +1,68 @@
+name: smoke-test
+
+# Fast sanity check on every push / PR. It does NOT download genomes: it runs the
+# pipeline wrapper in --dry-run mode, which builds the pinned venv, runs the
+# resolver, and prints what *would* be downloaded, then exits before Nextflow.
+# This catches gross breakage (shell syntax, Python errors, CSV parsing, a broken
+# or unpinnable dependency set) in seconds.
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  dry-run:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      # Python 3.10 matches the version requirements.txt was locked against,
+      # so the hash-checked install resolves deterministically.
+      - name: Set up Python 3.10
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.10"
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Static checks (shell syntax + Python compile)
+        run: |
+          bash -n run_pipeline.sh
+          python -m py_compile bin/*.py
+
+      # Pre-seed the resolver cache so CI needs no network and never hits the
+      # interactive prompt (an ambiguous query would block on stdin under CI).
+      - name: Seed resolver cache
+        run: |
+          mkdir -p requests
+          cp examples/sample_requests_resolved.csv requests/requests_resolved.csv
+
+      - name: Dry-run smoke test
+        run: bash run_pipeline.sh examples/sample_requests_raw.csv --dry-run
+
+      - name: Assert resolved output
+        run: |
+          test -f requests/requests_resolved.csv
+          grep -q "sacCer3" requests/requests_resolved.csv
+          echo "Smoke test passed."
+
+  # Static parse/lint of the Nextflow code with the strict syntax parser - the
+  # same parser users run, so this catches errors like a local closure being
+  # reported as "not defined" before they reach anyone. No execution, no conda,
+  # no network: `nextflow lint` is pure static analysis.
+  nextflow-lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      # setup-nextflow@v3 is the Node 24 release and installs Java 17 itself,
+      # so no separate setup-java step is needed.
+      - name: Set up Nextflow (installs Java 17)
+        uses: nf-core/setup-nextflow@v3
+        with:
+          version: "26.04.4"
+
+      # The strict syntax parser is the default from Nextflow 26.04 onward, so
+      # no NXF_SYNTAX_PARSER override is needed - `nextflow lint` uses it directly.
+      - name: Lint Nextflow scripts (strict parser)
+        run: nextflow lint main.nf nextflow.config

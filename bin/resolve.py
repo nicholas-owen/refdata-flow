@@ -292,6 +292,10 @@ def write_resolved(output_file, rows):
     at this scale.
     """
     directory = os.path.dirname(os.path.abspath(output_file)) or "."
+    # The output now lives in requests/, which normally exists because the request
+    # CSV is read from it. Create it anyway: mkstemp fails with a bare FileNotFound
+    # naming a hidden temp file, which says nothing about the real cause.
+    os.makedirs(directory, exist_ok=True)
     fd, tmp_path = tempfile.mkstemp(dir=directory, prefix=".resolve-", suffix=".tmp")
     try:
         with os.fdopen(fd, "w", newline="") as f:
@@ -408,10 +412,11 @@ def main():
     parser = argparse.ArgumentParser(
         description="Resolve generic species queries into exact assemblies."
     )
-    parser.add_argument("input_csv", help="Request CSV (species, query, provider, annotation, aliases)")
+    parser.add_argument("input_csv",
+                        help="Request CSV (species, query, provider, annotation, aliases, release)")
     parser.add_argument(
-        "output_csv", nargs="?", default="requests_resolved.csv",
-        help="Resolved CSV to write (default: requests_resolved.csv)",
+        "output_csv", nargs="?", default="requests/requests_resolved.csv",
+        help="Resolved CSV to write (default: requests/requests_resolved.csv)",
     )
     parser.add_argument(
         "--non-interactive", action="store_true",
