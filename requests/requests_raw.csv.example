@@ -1,4 +1,4 @@
 species,query,provider,annotation,aliases,release
-Homo_sapiens,GRCh38,ensembl,TRUE,GRCh38;human,
+Homo_sapiens,GRCh38,ensembl,TRUE,GRCh38;human,116
 Mus_musculus,mouse,ensembl,TRUE,mm39;mm,
 Saccharomyces_cerevisiae,sacCer3,ucsc,TRUE,yeast;sacCer,
