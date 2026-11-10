@@ -5,6 +5,9 @@ name: smoke-test
 # resolver, and prints what *would* be downloaded, then exits before Nextflow.
 # This catches gross breakage (shell syntax, Python errors, CSV parsing, a broken
 # or unpinnable dependency set) in seconds.
+#
+# The test suite then runs in the same job: the resolver, the ingest against real
+# refgenie, and main.nf itself under `nextflow run -stub`. Still no downloads.
 
 on:
   push:
@@ -46,12 +49,30 @@ jobs:
           grep -q "sacCer3" requests/requests_resolved.csv
           echo "Smoke test passed."
 
+      # tests/test_nextflow_stub.py executes main.nf (`nextflow run -stub`, plus
+      # the retry tests). Same pinned version as the lint job below; the action
+      # installs Java 17 itself.
+      - name: Set up Nextflow (installs Java 17)
+        uses: nf-core/setup-nextflow@v3
+        with:
+          version: "26.04.4"
+
       # Runs after the dry run on purpose: that step is what builds .venv and
-      # writes the samtools shim the ingest test needs. Still no network - the
-      # resolver tests fake the provider search, and the ingest test builds a
-      # refgenie vault from 40-base toy genomes.
-      - name: Unit and ingest tests
-        run: .venv/bin/python -m unittest discover -s tests -v
+      # writes the samtools shim the ingest tests need. No genome provider is
+      # contacted - the resolver tests fake the provider search, the Nextflow
+      # tests run the stub block, and the ingest tests build a refgenie vault from
+      # toy genomes a few dozen bases long.
+      #
+      # The tests skip themselves when refgenie, samtools or nextflow is missing,
+      # which is right on a laptop and wrong here: this job installs all three, so
+      # a skip means the setup above broke and the suite proved nothing.
+      - name: Unit, ingest and Nextflow tests
+        run: |
+          .venv/bin/python -m unittest discover -s tests -v 2>&1 | tee "$RUNNER_TEMP/tests.log"
+          if grep -q "skipped" "$RUNNER_TEMP/tests.log"; then
+            echo "::error::Some tests were skipped; CI must run all of them."
+            exit 1
+          fi
 
   # Static parse/lint of the Nextflow code with the strict syntax parser - the
   # same parser users run, so this catches errors like a local closure being

@@ -65,6 +65,13 @@ The tests need no network and no extra packages. Run them with the pipeline's ow
 - `tests/test_resolve.py` drives the resolver with the provider search faked.
 - `tests/test_update_refgenie.py` covers the vault naming, alias and default-tag rules.
 - `tests/test_ingest_e2e.py` builds a real refgenie vault from 40-base toy genomes: one assembly from two providers, plus an older pinned release. It is skipped, with the reason printed, where refgenie or `samtools` is missing or the filesystem has no symlinks.
+- `tests/test_nextflow_stub.py` executes `main.nf`. Most of it uses `nextflow run -stub`, which replaces the download with a toy assembly directory and leaves everything around it real: request validation, the duplicate guard, the publish layout. One test hands that output to the ingest, so the two stages are checked against each other. The retry tests run the real script with a `python3` that only fails. It is skipped where `nextflow` is not on `PATH`, and takes about a minute.
+
+You can run the stub by hand too. Nothing is downloaded, and the `provenance.json` it writes is marked `"stub": true`:
+
+```bash
+nextflow run main.nf -stub -profile standard --input requests/requests_resolved.csv --outdir /tmp/stub-out
+```
 
 ## Directory Structure
 
@@ -176,6 +183,15 @@ A couple of things to be aware of:
 - Resume works at the **per-genome** level: it skips genomes whose download *completed successfully* in a prior run. A genome that was still downloading when you interrupted it did not complete, so it restarts from the beginning (there is no partial/byte-level resume). Re-running is safe: finished genomes are skipped, only unfinished ones re-run.
 - Resume relies on the `work/` and `.nextflow/` directories. Running `bash run_pipeline.sh --clean` (or deleting those directories) **erases the resume cache**, so the next run re-downloads everything. Only `--clean` once you're finished.
 - On a resumed run, skipped genomes are shown as `cached` in the Nextflow output, e.g. `… FETCH_GENOME (…) [100%] 1 of 1, cached: 1 ✔`.
+
+### 🔂 Failed downloads are retried
+
+A download that fails is tried again, twice, waiting 30 seconds and then 60. Most failures are a provider that is briefly unreachable or a dropped connection, and the request itself is fine. Two cases are handled differently:
+
+- **A missing tool is never retried.** `download.py` exits with code 3 when the UCSC annotation tools are absent, and trying again cannot fix that.
+- **When the attempts run out, other downloads finish first.** The run still exits non-zero and nothing is ingested, but genomes that were mid-download complete and are kept for the next `-resume`.
+
+At most four downloads run at once, as a courtesy to the providers. The three settings are `max_retries`, `retry_wait` (seconds) and `max_downloads` in `nextflow.config`. `run_pipeline.sh` does not forward them, so change them there, or pass them to a bare `nextflow run` as `--max_retries 0`.
 
 ## Output & Provenance
 
@@ -359,6 +375,8 @@ Two operational notes:
   - **The default annotation tag only moves forward.** Ingesting an older release no longer takes the default from a newer one.
   - **Three checks moved to resolve time**: `annotation=true` on an unannotated assembly, two rows resolving to the same download, and one alias on two different genomes. All previously surfaced after downloading, or not at all.
   - **`requests_resolved.csv` gains an `aliases` column**, and `bin/update_refgenie.py` no longer takes the raw request CSV as an argument.
+  - **Failed downloads are retried**, twice by default, with at most four downloads running at once. Previously the first failure ended the run and killed every other download in progress. See *Failed downloads are retried*.
+  - **Tests.** `tests/` holds an offline suite covering the resolver, the ingest against real refgenie, and `main.nf` itself through a new `stub:` block. CI runs all of it and fails if any test is skipped.
 - **0.9.1**: Harm-reduction release. Behaviour changes - read before upgrading.
   - **Source data is no longer deleted by default.** Cleanup of the downloaded assembly directories is now opt-in via `run_pipeline.sh --cleanup`, and even then runs only after the FASTA (and the GTF, if annotation was requested) is verified into the vault. Previously it ran unconditionally, including after a partially-failed ingest.
   - **Provenance survives cleanup.** `provenance.json`, genomepy's `README.txt` and `assembly_report.txt` are copied to `<outdir>/provenance/<provider>/<species>/<assembly>/` before any removal. Previously all three were destroyed by the cleanup step that immediately followed their creation.

@@ -28,15 +28,19 @@ def safe(String val, String field) {
 // Each row is the tuple built in the workflow below: species, assembly, provider,
 // annotation, release. Provider is compared case-insensitively because genomepy
 // reports 'Ensembl' while a hand-written file may say 'ensembl'.
+//
+// Call this from a `map`, not a `flatMap`. Under Nextflow 26.04 an error() raised
+// inside flatMap still stops the run, but reaches the user as "Unexpected error
+// [InvocationTargetException]" with the message only in .nextflow.log; from map it
+// is printed as written. Found by tests/test_nextflow_stub.py the first time this
+// guard was actually executed.
 def rejectDuplicates(List rows) {
-    def seen = [:]
-    rows.each { row ->
-        def provider = (row[2] ?: '').toString().toLowerCase()
-        def key = "${provider}/${row[1]}@${row[4] ?: 'current'}".toString()
-        if( seen.containsKey(key) )
-            error "Duplicate request for ${row[1]} from '${row[2]}' (release: ${row[4] ?: 'current'}). Each provider, assembly and release may appear once; merge the rows."
-        seen[key] = true
+    def names = rows.collect { row ->
+        "${row[1]} from '${(row[2] ?: '').toString().toLowerCase()}' (release: ${row[4] ?: 'current'})".toString()
     }
+    def repeated = names.findAll { name -> names.count(name) > 1 }.unique()
+    if( repeated )
+        error "Duplicate request for ${repeated.join('; ')}. Each provider, assembly and release may appear once; merge the rows."
     return rows
 }
 
@@ -50,6 +54,36 @@ process FETCH_GENOME {
     // interleaves (each line is tagged with its assembly); for the detailed
     // byte-level progress bar, tail the task's work/<hash>/.command.log.
     debug params.debug
+
+    // A download fails for reasons that have nothing to do with the request: a
+    // provider that is briefly unreachable, a connection dropped part-way through a
+    // multi-gigabyte file. Without a strategy the first such failure ended the run,
+    // and Nextflow's default ('terminate') killed every other download still in
+    // progress along with it.
+    //
+    //   * exit 3 is bin/download.py's "a required tool is missing". Trying again
+    //     cannot fix that, so it is never retried.
+    //   * anything else is retried, up to params.max_retries further attempts.
+    //   * when the attempts run out, 'finish' rather than 'terminate': downloads
+    //     that are already running complete (and stay cached for -resume) before
+    //     the run exits non-zero.
+    //
+    // The wait before a retry lives here, not as a `sleep` in the script block, so
+    // the script - which is part of what -resume matches a finished task on - is
+    // the same on every attempt. The cost of sleeping here is that Nextflow's task
+    // bookkeeping pauses for those seconds; the downloads themselves carry on.
+    errorStrategy {
+        if( task.exitStatus == 3 || task.attempt > params.max_retries )
+            return 'finish'
+        sleep((params.retry_wait as long) * 1000 * task.attempt)
+        return 'retry'
+    }
+    maxRetries params.max_retries
+
+    // Every task is a download from one of four public providers. Unbounded, a long
+    // request list opens one connection per row at once, which is unkind to them and
+    // tends to get throttled.
+    maxForks params.max_downloads
 
     // Closure form (not a plain string) so the input variables `provider` and
     // `species` are resolved in the task scope - a bare "${provider}" string
@@ -103,6 +137,44 @@ process FETCH_GENOME {
         ${annotation_flag} \\
         ${release_flag}
     """
+
+    // `nextflow run -stub` runs this instead of the script above: no network, no
+    // genomepy, no conda. It writes the same directory download.py leaves behind,
+    // at toy size, so the parts of this workflow that only ever ran during a real
+    // download - the request checks, the duplicate guard, the release-level publish
+    // path - can be executed in CI in seconds. tests/test_nextflow_stub.py drives it
+    // and hands the result to bin/update_refgenie.py.
+    //
+    // Contigs are chr-prefixed for the providers that name them that way. That is
+    // not decoration: one assembly requested from Ensembl and from GENCODE must
+    // yield two different sequences, as it does in reality, or refgenie computes one
+    // digest for both and the test of keeping them apart tests nothing. The third
+    // contig carries the assembly name for the same reason, one level up: two
+    // different assemblies must not come out as the same sequence either.
+    //
+    // provenance.json is marked "stub": true so the output can never be mistaken
+    // for a record of a real download.
+    stub:
+    def sp  = safe(species,  'species')
+    def asm = safe(assembly, 'assembly')
+    def prv = safe(provider, 'provider')
+    def want_gtf = annotation.toString().toLowerCase() == 'true'
+    def chr = ['ucsc', 'gencode'].contains(prv.toLowerCase()) ? 'chr' : ''
+    def rel_tag = release ?: 'stub'
+    def attrs = 'gene_id "g1"; gene_version "1"; gene_name "G1"; gene_source "stub"; gene_biotype "protein_coding";'
+    def exon_attrs = 'gene_id "g1"; gene_version "1"; transcript_id "t1"; transcript_version "1"; exon_number "1"; gene_name "G1"; gene_source "stub"; gene_biotype "protein_coding";'
+    def release_json = want_gtf ? ", \"annotation_release\": \"${rel_tag}\", \"annotation_release_kind\": \"stub\"" : ''
+    """
+    mkdir -p "${asm}"
+    printf '>${chr}1\\nACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT\\n>${chr}2\\nTTGGCCAATTGGCCAATTGGCCAATTGGCCAATTGGCCAA\\n>${chr}Un_${asm}\\nGATTACAGATTACAGATTACA\\n' \\
+        | gzip > "${asm}/${asm}.fa.gz"
+    if [ "${want_gtf}" = "true" ]; then
+        printf '${chr}1\\tstub\\tgene\\t1\\t30\\t.\\t+\\t.\\t${attrs}\\n${chr}1\\tstub\\texon\\t1\\t30\\t.\\t+\\t.\\t${exon_attrs}\\n' \\
+            | gzip > "${asm}/${asm}.annotation.gtf.gz"
+    fi
+    printf '%s\\n' '{"stub": true, "species": "${sp}", "assembly": "${asm}", "provider": "${prv}", "annotation_requested": ${want_gtf}${release_json}}' \\
+        > "${asm}/provenance.json"
+    """
 }
 
 workflow {
@@ -132,16 +204,23 @@ workflow {
         // It is validated here as well as in the process script, because it now
         // forms part of the publish path, and publishDir is resolved independently
         // of the script block that carries the other check.
+        //
+        // The other three fields go through safe() here for the same reason - they
+        // form the rest of that path - and so that a bad value stops the run before
+        // any task is created, whether the script or the stub would have run.
         .map { row ->
             def rel = (row.release ?: '').toString().trim()
             if( rel && !(rel ==~ /^[0-9]+$/) )
                 error "Unsafe or non-numeric release: '${rel}'"
-            tuple(row.species, row.assembly, row.provider, row.annotation, rel)
+            tuple(safe(row.species, 'species'), safe(row.assembly, 'assembly'),
+                  safe(row.provider, 'provider'), row.annotation, rel)
         }
         // Collected so the whole list can be checked for duplicates before any
-        // task starts; flatMap then emits the rows one at a time again.
+        // task starts; flatMap then emits the rows one at a time again. The check
+        // sits in its own map, not in the flatMap - see rejectDuplicates.
         .toList()
-        .flatMap { rows -> rejectDuplicates(rows) }
+        .map { rows -> rejectDuplicates(rows) }
+        .flatMap { rows -> rows }
         .set { requests_ch }
 
     FETCH_GENOME(requests_ch)
