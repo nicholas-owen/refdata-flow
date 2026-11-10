@@ -8,6 +8,7 @@ import csv
 import glob
 import json
 import logging
+import re
 import subprocess
 import shutil
 
@@ -203,7 +204,8 @@ def logged_rmtree(path: str, logger: logging.Logger) -> bool:
 # ---------------------------------------------------------------------------
 
 def preserve_provenance(asm_dir: str, outdir: str, provider: str, species: str,
-                        assembly: str, logger: logging.Logger) -> None:
+                        assembly: str, logger: logging.Logger,
+                        release_parts: tuple = ()) -> None:
     """
     Copy the run's provenance artefacts out of the download directory before that
     directory is removed.
@@ -214,11 +216,14 @@ def preserve_provenance(asm_dir: str, outdir: str, provider: str, species: str,
     the audit trail the README advertises.
 
     They are copied to <outdir>/provenance/<provider>/<species>/<assembly>/, which
-    is outside the download tree and is never removed by cleanup. Relocating these
+    is outside the download tree and is never removed by cleanup. A pinned release
+    adds the same release-<n>/ level the download tree has (`release_parts`), so
+    two releases of one assembly do not overwrite each other's record here either. Relocating these
     into the vault's per-digest asset directory is deferred until the digest is
     resolved earlier in the flow (roadmap Phase 4).
     """
-    dest = safe_path_under(outdir, "provenance", provider, species, assembly)
+    dest = safe_path_under(outdir, "provenance", provider, species,
+                           *release_parts, assembly)
     os.makedirs(dest, exist_ok=True)
 
     preserved = []
@@ -242,8 +247,46 @@ def preserve_provenance(asm_dir: str, outdir: str, provider: str, species: str,
 # Aliases
 # ---------------------------------------------------------------------------
 
-def merge_aliases(assembly, assembly_safe, species, query, query_map,
-                  custom_aliases_map, config_file, logger):
+def vault_genome_name(assembly, provider):
+    """
+    The name a genome is built under in refgenie: '<assembly>_<provider>'.
+
+    It used to be the assembly name alone, which two providers can share - Ensembl
+    and GENCODE both publish GRCm39 and GRCh38.p14. Reproduced against refgenie
+    0.13.0 with two toy FASTAs of one name (contigs 1/2 and chr1/chr2):
+
+      * `refgenie build <name>/fasta` for the second provider digests its FASTA and
+        attaches the same name to the new digest, so one name now sits on two
+        genomes;
+      * `refgenie build <name>/gencode_gtf` then resolves that name to the FIRST
+        digest, and files the chr-prefixed GENCODE annotation under the Ensembl
+        genome whose contigs are 1/2/X.
+
+    The run did exit non-zero, but for an alias conflict; nothing said an
+    annotation had been attached to the wrong sequence, and
+    `refgenie seek <name>/gencode_gtf` returned it without complaint.
+
+    A build name unique to one (assembly, provider) means no build can resolve to
+    another provider's genome. The bare assembly name is still offered as an
+    alias, on a first-come basis (see merge_aliases).
+
+    "." becomes "_" because refgenie's registry-path parser does not accept a dot
+    in a genome name. The provider is lower-cased so 'Ensembl' from genomepy and
+    'ensembl' from a hand-written CSV name one genome, not two.
+    """
+    provider_part = re.sub(r"[^a-z0-9]+", "_", str(provider).strip().lower()).strip("_")
+    if not provider_part:
+        raise ValueError(f"cannot name a vault genome for '{assembly}': no provider given")
+    return f"{assembly.replace('.', '_')}_{provider_part}"
+
+
+def parse_aliases(value):
+    """'yeast; sacCer' -> ['yeast', 'sacCer']."""
+    return [a.strip() for a in str(value or "").split(";") if a.strip()]
+
+
+def merge_aliases(vault_name, assembly, auto_names, requested_aliases,
+                  config_file, logger):
     """
     Merge this request's aliases into the digest's alias list in the refgenie config.
 
@@ -260,83 +303,150 @@ def merge_aliases(assembly, assembly_safe, species, query, query_map,
 
     Aliases are therefore merged immediately after the FASTA build (which is what
     creates the digest in the first place) and before anything else is built.
+
+    The digest is found by `vault_name` and nothing else. That name is unique to one
+    (assembly, provider), so the lookup cannot land on another provider's copy of
+    the same assembly - which matching on the bare assembly name could, and did.
+
+    Two kinds of alias, treated differently when one is already taken by another
+    genome:
+
+      * `requested_aliases` come from the `aliases` column. The user asked for them
+        by name, so being unable to grant one is a problem and fails the run.
+      * `auto_names` are derived - the assembly name, its stem, the query. Nobody
+        asked for 'GRCm39' to mean this genome in particular, so when another
+        provider's GRCm39 already holds it, this one is simply reachable under its
+        vault name instead. Logged, not failed: requesting an assembly from two
+        providers is legitimate and must not exit non-zero.
     """
     problems = []
 
-    aliases_to_set = set([assembly_safe, assembly, assembly.split(".")[0]])
-
-    # Look up by (species, query), so a species with more than one requested
-    # assembly gets each row's own aliases rather than the last row's.
-    key = (species, query)
-    raw_query = query_map.get(key)
-    if raw_query:
-        aliases_to_set.add(raw_query)
-
-    for ca in custom_aliases_map.get(key, []):
-        aliases_to_set.add(ca)
-
     try:
         with open(config_file, "r") as f:
-            config = yaml.safe_load(f)
+            config = yaml.safe_load(f) or {}
 
-        # Resolve the digest from this assembly's OWN identifiers rather than from
-        # any overlap with aliases_to_set. Matching on overlap meant a custom alias
-        # shared between two rows - 'yeast' on both the UCSC and the Ensembl yeast,
-        # say - resolved to whichever digest was written first, and this row's
-        # aliases were then merged onto the wrong genome.
-        own_names = {assembly_safe, assembly, assembly.split(".")[0]}
-        target_digest = None
         alias_owner = {}
-        if "genomes" in config:
-            for digest, data in config["genomes"].items():
-                existing_aliases = data.get("aliases", []) or []
-                for existing in existing_aliases:
-                    alias_owner[existing] = digest
-                if target_digest is None and any(a in existing_aliases for a in own_names):
-                    target_digest = digest
+        for digest, data in (config.get("genomes") or {}).items():
+            for existing in ((data or {}).get("aliases") or []):
+                alias_owner[existing] = digest
 
-        # An alias names exactly one genome. If one of ours already belongs to a
-        # different digest, taking it would silently repoint it - so report it and
-        # leave it where it is. The rest of this row's aliases still apply.
-        if target_digest:
-            conflicts = sorted(
-                a for a in aliases_to_set
-                if alias_owner.get(a) not in (None, target_digest)
-            )
-            if conflicts:
-                logger.error(
-                    "Alias(es) %s already name a different genome, so they were NOT "
-                    "applied to '%s'. An alias cannot point at two assemblies; give "
-                    "this row its own alias in the request CSV.",
-                    ", ".join(f"'{c}'" for c in conflicts), assembly
-                )
-                problems.append(
-                    f"{assembly}: alias(es) {', '.join(conflicts)} already belong to "
-                    "another genome and were not applied"
-                )
-                aliases_to_set -= set(conflicts)
-
-        if target_digest:
-            current_aliases = config["genomes"][target_digest].get("aliases", [])
-            merged_aliases  = sorted(list(set(current_aliases) | aliases_to_set))
-            config["genomes"][target_digest]["aliases"] = merged_aliases
-            logger.info(
-                "Applying %d aliases to digest %s...: %s",
-                len(merged_aliases), target_digest[:8], merged_aliases
-            )
-            with open(config_file, "w") as f:
-                yaml.dump(config, f, default_flow_style=False, sort_keys=False)
-        else:
+        target_digest = alias_owner.get(vault_name)
+        if not target_digest:
             logger.warning(
-                "Could not resolve a digest for '%s' in config - skipping alias update",
-                assembly
+                "No genome named '%s' in the config - skipping alias update for '%s'. "
+                "Vault genomes are named <assembly>_<provider>; an entry built before "
+                "that naming was introduced is picked up by re-ingesting its download.",
+                vault_name, assembly
             )
-            problems.append(f"{assembly}: no digest found in config, aliases not applied")
+            problems.append(
+                f"{assembly}: no genome named '{vault_name}' in config, aliases not applied"
+            )
+            return problems
+
+        def taken(alias):
+            return alias_owner.get(alias) not in (None, target_digest)
+
+        requested = set(requested_aliases)
+        refused = sorted(a for a in requested if taken(a))
+        if refused:
+            logger.error(
+                "Alias(es) %s already name a different genome, so they were NOT "
+                "applied to '%s'. An alias cannot point at two assemblies; give "
+                "this row its own alias in the request CSV.",
+                ", ".join(f"'{c}'" for c in refused), assembly
+            )
+            problems.append(
+                f"{assembly}: alias(es) {', '.join(refused)} already belong to "
+                "another genome and were not applied"
+            )
+
+        derived = set(auto_names) - requested
+        unavailable = sorted(a for a in derived if taken(a))
+        if unavailable:
+            logger.info(
+                "Name(s) %s already refer to another genome in the vault (the same "
+                "assembly from a different provider, usually) and stay with it. "
+                "This genome is reachable as '%s'.",
+                ", ".join(f"'{c}'" for c in unavailable), vault_name
+            )
+
+        aliases_to_set = (
+            {vault_name} | (requested - set(refused)) | (derived - set(unavailable))
+        )
+
+        entry = config["genomes"][target_digest]
+        merged_aliases = sorted(set(entry.get("aliases") or []) | aliases_to_set)
+        entry["aliases"] = merged_aliases
+        logger.info(
+            "Applying %d aliases to digest %s...: %s",
+            len(merged_aliases), target_digest[:8], merged_aliases
+        )
+        with open(config_file, "w") as f:
+            yaml.dump(config, f, default_flow_style=False, sort_keys=False)
     except Exception as e:
         logger.error("Failed to update aliases via YAML for '%s': %s", assembly, e)
         problems.append(f"{assembly}: alias update failed ({e})")
 
     return problems
+
+
+# ---------------------------------------------------------------------------
+# Default tag
+# ---------------------------------------------------------------------------
+
+def current_default_tag(config_file, vault_name, asset):
+    """
+    The tag `refgenie seek <genome>/<asset>` resolves to right now, or None.
+
+    None covers every "nothing to compare against" case alike - no such genome, no
+    such asset yet, an unreadable config - because the caller's response to all of
+    them is the same: let the newly built tag become the default.
+    """
+    try:
+        with open(config_file, "r") as f:
+            config = yaml.safe_load(f) or {}
+        for data in (config.get("genomes") or {}).values():
+            if vault_name in ((data or {}).get("aliases") or []):
+                asset_data = (data.get("assets") or {}).get(asset) or {}
+                return asset_data.get("default_tag")
+    except Exception:
+        pass
+    return None
+
+
+def release_sort_key(tag):
+    """
+    Order release tags the way the releases themselves are ordered, or None.
+
+    Every tag download.py derives is numeric at heart: an Ensembl release ('116'),
+    a GENCODE release ('44', or 'M33' for mouse), or an upstream modification date
+    ('20240312'). Comparing the digits as integers orders all three correctly;
+    comparing the strings would put '99' above '116'. A tag is only ever compared
+    with another tag of the same asset on the same genome, so the three vocabularies
+    never meet.
+
+    None for a tag with no digits - refgenie's own 'default', in practice.
+    """
+    numbers = re.findall(r"\d+", str(tag or ""))
+    return tuple(int(n) for n in numbers) if numbers else None
+
+
+def should_become_default(current, new):
+    """
+    Should a newly built tag replace the current default?
+
+    Yes unless it is demonstrably older. The ingest used to make every tag it built
+    the default, so pinning an older release for one analysis - 110, with 116
+    already in the vault - silently moved `refgenie seek <genome>/<asset>` back to
+    110 for every caller that names no tag.
+
+    An unparseable current tag ('default', from before release tagging) is replaced:
+    a release that has been identified beats one that has not.
+    """
+    current_key, new_key = release_sort_key(current), release_sort_key(new)
+    if current_key is None or new_key is None:
+        return True
+    return new_key >= current_key
 
 
 def relink_aliases(config_file, assembly, logger):
@@ -392,8 +502,7 @@ def relink_aliases(config_file, assembly, logger):
 # Per-assembly processing
 # ---------------------------------------------------------------------------
 
-def process_assembly(row, outdir, config_file, refgenie_bin, query_map,
-                     custom_aliases_map, do_cleanup, logger):
+def process_assembly(row, outdir, config_file, refgenie_bin, do_cleanup, logger):
     """
     Register one resolved request into the refgenie vault.
 
@@ -408,11 +517,15 @@ def process_assembly(row, outdir, config_file, refgenie_bin, query_map,
     assembly   = (row.get("assembly")   or "").strip()
     provider   = (row.get("provider")   or "").strip()
     annotation = (row.get("annotation") or "false").strip().lower() == "true"
-    # Identifies which raw request produced this row, so its aliases can be looked
-    # up without colliding with another assembly of the same species. Absent from
-    # resolved CSVs written before the column existed, which degrades to the old
-    # behaviour for that row rather than failing.
     query      = (row.get("query")      or "").strip()
+    # The release the request PINNED, if any - distinct from the annotation release
+    # read back from provenance.json further down, which exists for unpinned
+    # requests too. This one only decides which directory the download is in.
+    release_pin = (row.get("release")   or "").strip()
+    # Carried on the resolved row by bin/resolve.py. They used to be looked up in
+    # the request CSV by (species, query), a key two providers' copies of one
+    # assembly share, so each received the other's aliases.
+    requested_aliases = parse_aliases(row.get("aliases"))
 
     logger.info("Processing %s...", assembly)
 
@@ -421,13 +534,23 @@ def process_assembly(row, outdir, config_file, refgenie_bin, query_map,
     # Validate that the assembly directory resolves inside outdir
     # before any filesystem operation (glob, build, rmtree).
     # -------------------------------------------------------
+    #
+    # A pinned release sits one level down, in release-<n>/, matching the
+    # publishDir in main.nf. The two build this path independently; keep them in
+    # step.
+    release_parts = (f"release-{release_pin}",) if release_pin else ()
     try:
-        asm_dir = safe_path_under(outdir, provider, species, assembly)
+        asm_dir = safe_path_under(outdir, provider, species, *release_parts, assembly)
+        vault_name = vault_genome_name(assembly, provider)
     except ValueError as e:
         logger.error("Skipping %s - %s", assembly, e)
         return [f"{assembly}: {e}"]
 
-    assembly_safe = assembly.replace(".", "_")
+    # Names offered as aliases without anyone asking for them by name. The first
+    # genome to arrive keeps each; see merge_aliases.
+    auto_names = {assembly, assembly.replace(".", "_"), assembly.split(".")[0]}
+    if query:
+        auto_names.add(query)
 
     # Track what actually made it into the vault. Cleanup is gated on these:
     # source data must never be removed on the strength of an ingest that only
@@ -447,10 +570,10 @@ def process_assembly(row, outdir, config_file, refgenie_bin, query_map,
         )
         if fasta_files:
             fasta_path = os.path.abspath(fasta_files[0])
-            logger.info("Building FASTA digest in refgenie for '%s'", assembly_safe)
+            logger.info("Building FASTA digest in refgenie for '%s'", vault_name)
             cmd = [
                 sys.executable, refgenie_bin, "build",
-                f"{assembly_safe}/fasta",
+                f"{vault_name}/fasta",
                 "--files", f"fasta={fasta_path}",
                 "-c", config_file
             ]
@@ -473,8 +596,8 @@ def process_assembly(row, outdir, config_file, refgenie_bin, query_map,
         # -------------------------------------------------------
         if fasta_registered:
             problems.extend(merge_aliases(
-                assembly, assembly_safe, species, query, query_map,
-                custom_aliases_map, config_file, logger
+                vault_name, assembly, auto_names, requested_aliases,
+                config_file, logger
             ))
             aliases_merged = True
 
@@ -520,12 +643,16 @@ def process_assembly(row, outdir, config_file, refgenie_bin, query_map,
                 # An unidentified release keeps refgenie's own default, which is the
                 # behaviour that existed before release tagging. The warning was
                 # already issued at download time, where the cause is known.
-                target = f"{assembly_safe}/{recipe_name}"
+                target = f"{vault_name}/{recipe_name}"
                 if release:
                     target += f":{release}"
+                # Read BEFORE the build: once the new tag exists there is no telling
+                # whether refgenie made it the default (it does for an asset's first
+                # tag) or left an older one in place.
+                previous_default = current_default_tag(config_file, vault_name, recipe_name)
                 logger.info(
                     "Building GTF annotation digest in refgenie for '%s' (provider: %s, "
-                    "recipe: %s%s, tag: %s%s)", assembly_safe, provider, recipe_name,
+                    "recipe: %s%s, tag: %s%s)", vault_name, provider, recipe_name,
                     " [custom]" if recipe_file else "",
                     release or "default",
                     f" [{release_kind}]" if release_kind else " [release not identified]"
@@ -550,13 +677,24 @@ def process_assembly(row, outdir, config_file, refgenie_bin, query_map,
                 # and `refgenie seek <genome>/<asset>` keeps returning the older one.
                 # Without this step a newly ingested release would be present in the
                 # vault but invisible to every caller that does not name a tag, which
-                # is the opposite of the intended "latest wins, older stays reachable"
+                # is the opposite of the intended "newest wins, older stays reachable"
                 # behaviour. Not fatal: the asset is built and addressable by tag.
-                if gtf_registered and release:
+                #
+                # "Newest", not "latest ingested": an older release pinned after a
+                # newer one is already in the vault must not take the default from
+                # it. See should_become_default.
+                if gtf_registered and release and not should_become_default(
+                        previous_default, release):
+                    logger.info(
+                        "Built '%s/%s:%s'. The default tag stays at '%s', which is a "
+                        "newer release; name the tag to use this one.",
+                        vault_name, recipe_name, release, previous_default
+                    )
+                elif gtf_registered and release:
                     try:
                         subprocess.run(
                             [sys.executable, refgenie_bin, "tag",
-                             f"{assembly_safe}/{recipe_name}:{release}",
+                             f"{vault_name}/{recipe_name}:{release}",
                              "--default", "-c", config_file],
                             check=True
                         )
@@ -565,7 +703,7 @@ def process_assembly(row, outdir, config_file, refgenie_bin, query_map,
                             "Built '%s/%s:%s' but could not make it the default tag: %s. "
                             "The asset is addressable by tag; callers using no tag will "
                             "still resolve to the previous release.",
-                            assembly_safe, recipe_name, release, e
+                            vault_name, recipe_name, release, e
                         )
             else:
                 # Annotation was explicitly requested, so its absence is a failure of
@@ -580,7 +718,7 @@ def process_assembly(row, outdir, config_file, refgenie_bin, query_map,
         # refresh the symlink tree once, covering assets built before the aliases
         # were attached (the FASTA in particular).
         if aliases_merged:
-            relink_aliases(config_file, assembly_safe, logger)
+            relink_aliases(config_file, vault_name, logger)
 
         # -------------------------------------------------------
         # Cleanup - opt-in, and only after a verified ingest
@@ -606,7 +744,8 @@ def process_assembly(row, outdir, config_file, refgenie_bin, query_map,
                 asm_dir, fasta_registered, annotation, gtf_registered
             )
         else:
-            preserve_provenance(asm_dir, outdir, provider, species, assembly, logger)
+            preserve_provenance(asm_dir, outdir, provider, species, assembly, logger,
+                                release_parts)
             logger.info("Cleaning up download directory: '%s'", asm_dir)
             if not logged_rmtree(asm_dir, logger):
                 logger.warning(
@@ -636,8 +775,8 @@ def process_assembly(row, outdir, config_file, refgenie_bin, query_map,
     # -----------------------------------------------------------
     if not aliases_merged:
         problems.extend(merge_aliases(
-            assembly, assembly_safe, species, query, query_map,
-            custom_aliases_map, config_file, logger
+            vault_name, assembly, auto_names, requested_aliases,
+            config_file, logger
         ))
 
     return problems
@@ -651,7 +790,6 @@ def main():
     parser = argparse.ArgumentParser(
         description="Register downloaded reference data into a refgenie vault."
     )
-    parser.add_argument("raw_csv", help="The original request CSV (source of queries and aliases)")
     parser.add_argument("resolved_csv", help="The resolved request CSV produced by bin/resolve.py")
     parser.add_argument("outdir", help="Output directory holding the refgenie vault")
     parser.add_argument(
@@ -663,7 +801,6 @@ def main():
     )
     args = parser.parse_args()
 
-    raw_csv      = args.raw_csv
     resolved_csv = args.resolved_csv
     outdir       = args.outdir
 
@@ -684,39 +821,6 @@ def main():
             check=True
         )
 
-    # Map each raw request to its custom aliases.
-    #
-    # Keyed by (species, query), NOT by species alone. Keying on species meant the
-    # last row for a species overwrote every earlier one, so two assemblies of the
-    # same species - Saccharomyces_cerevisiae as both UCSC sacCer3 and Ensembl
-    # R64-1-1, say - collapsed into one entry. The consequences were silent and
-    # severe: the second row's aliases were applied to the first row's digest, which
-    # bound 'R64-1-1' to the UCSC genome; refgenie then resolved R64-1-1/fasta to
-    # that digest, skipped the build because the flag already existed, and filed the
-    # Ensembl annotation under a UCSC assembly. The run still exited 0.
-    #
-    # (species, query) is the right key because query is what distinguishes two rows
-    # of the same species, and bin/resolve.py carries it into the resolved CSV - so
-    # the row being ingested can look up exactly the request that produced it.
-    query_map          = {}
-    custom_aliases_map = {}
-    try:
-        with open(raw_csv, "r", newline="") as f:
-            reader = csv.DictReader(f)
-            for row in reader:
-                sp          = (row.get("species") or "").strip()
-                q           = (row.get("query") or "").strip()
-                aliases_str = (row.get("aliases") or "").strip()
-                if sp and q:
-                    key = (sp, q)
-                    query_map[key] = q
-                    if aliases_str:
-                        custom_aliases_map[key] = [
-                            a.strip() for a in aliases_str.split(";") if a.strip()
-                        ]
-    except Exception as e:
-        logger.warning("Could not read '%s': %s", raw_csv, e)
-
     # Process each resolved request. Each row is isolated so a failure part-way
     # through the batch no longer abandons the assemblies after it.
     all_problems = []
@@ -731,7 +835,7 @@ def main():
                     all_problems.extend(
                         process_assembly(
                             row, outdir, config_file, refgenie_bin,
-                            query_map, custom_aliases_map, args.cleanup, logger
+                            args.cleanup, logger
                         )
                     )
                 except Exception as e:

@@ -7,7 +7,9 @@ docs/
 # requests/requests_raw.csv.example, which this pattern deliberately does not match.
 requests/*.csv
 requests.csv
-test*.py
+# Scratch scripts in the repo root only. Anchored with a leading slash: unanchored,
+# this pattern also matched tests/test_*.py and kept the test suite out of git.
+/test*.py
 docs_private/
 refdata-flow-archive/
 # Python virtual environment (created by run_pipeline.sh)

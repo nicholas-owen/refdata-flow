@@ -46,6 +46,13 @@ jobs:
           grep -q "sacCer3" requests/requests_resolved.csv
           echo "Smoke test passed."
 
+      # Runs after the dry run on purpose: that step is what builds .venv and
+      # writes the samtools shim the ingest test needs. Still no network - the
+      # resolver tests fake the provider search, and the ingest test builds a
+      # refgenie vault from 40-base toy genomes.
+      - name: Unit and ingest tests
+        run: .venv/bin/python -m unittest discover -s tests -v
+
   # Static parse/lint of the Nextflow code with the strict syntax parser - the
   # same parser users run, so this catches errors like a local closure being
   # reported as "not defined" before they reach anyone. No execution, no conda,

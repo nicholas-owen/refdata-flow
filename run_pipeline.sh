@@ -354,7 +354,10 @@ nextflow run main.nf $NF_ARGS
 
 echo ""
 echo "[Step 3] Building Refgenie Configuration..."
-REFGENIE_ARGS=("$RAW_CSV" "$RESOLVED_CSV" "$OUTDIR")
+# Only the resolved CSV is passed. The ingest used to read the raw request as well,
+# to look each row's aliases back up; bin/resolve.py now carries them on the
+# resolved row, so there is nothing left for it to join against.
+REFGENIE_ARGS=("$RESOLVED_CSV" "$OUTDIR")
 if [ "$CLEANUP" -eq 1 ]; then
     echo "[Step 3] --cleanup: verified source directories will be removed after ingest."
     REFGENIE_ARGS+=(--cleanup)

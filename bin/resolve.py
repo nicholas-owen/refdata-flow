@@ -16,7 +16,15 @@ from genomepy.providers import list_providers
 # meant an edited query (e.g. GRCh38 -> GRCh37) silently returned the previously
 # resolved assembly. Downstream consumers (main.nf, update_refgenie.py) read by
 # column name, so the extra column is additive and harmless to them.
-RESOLVED_FIELDNAMES = ["species", "assembly", "provider", "annotation", "query", "release"]
+#
+# `aliases` is carried through for the same reason, one step further on. The ingest
+# used to join each resolved row back to the request CSV on (species, query) to find
+# its aliases, which cannot tell apart two rows asking for the same assembly from two
+# providers - Mus_musculus/GRCm39 from Ensembl and from GENCODE share that key, so
+# both rows were handed the last row's aliases and the first genome ended up
+# carrying the second's. A resolved row that carries its own aliases needs no join.
+RESOLVED_FIELDNAMES = ["species", "assembly", "provider", "annotation", "query",
+                       "release", "aliases"]
 
 # Which providers can actually be pinned to a release.
 #
@@ -332,9 +340,16 @@ def load_cache(output_file):
     Load previous resolutions so an unchanged request can skip the slow network
     search and the interactive prompt.
 
-    Keyed on (species, query) rather than species alone: a species may legitimately
-    be needed at more than one assembly, and an edited query must not be answered
-    from a stale entry.
+    Keyed on (species, query, release) rather than species alone: a species may
+    legitimately be needed at more than one assembly, an edited query must not be
+    answered from a stale entry, and two releases of one assembly are two requests.
+    Release was previously compared after the lookup instead of being part of the
+    key, so two rows differing only in release shared one slot and evicted each
+    other on every run.
+
+    Each key holds a LIST, because the key still does not identify a request on its
+    own: the same query against two providers (GRCm39 from Ensembl and from GENCODE)
+    is two rows with one key. cached_resolution() picks between them by provider.
 
     A resolved CSV written before the `query` column existed yields an empty query
     for every row, so its entries simply fail to match and are re-resolved. That is
@@ -349,8 +364,9 @@ def load_cache(output_file):
             for row in reader:
                 species = (row.get("species") or "").strip()
                 query = (row.get("query") or "").strip()
+                release = (row.get("release") or "").strip()
                 if species:
-                    cache[(species, query)] = row
+                    cache.setdefault((species, query, release), []).append(row)
     except Exception as e:
         # Previously this was `except Exception: pass`, which made a corrupt cache
         # indistinguishable from an absent one. Re-resolving everything is still the
@@ -362,6 +378,94 @@ def load_cache(output_file):
         )
         return {}
     return cache
+
+
+def cached_resolution(cache, species, query, release, provider_filter):
+    """
+    The one cached row that answers this request, or None to re-resolve.
+
+    With a provider named in the request, only a cached row from that provider
+    counts: a filter added or changed since the cached run must not be ignored, as
+    the cached assembly may come from a provider the user has now ruled out.
+
+    Anything other than exactly one candidate is a miss. Two candidates means the
+    cache cannot say which was meant, and guessing is how a request ends up with
+    another row's genome; re-resolving costs one search.
+    """
+    rows = cache.get((species, query, release), [])
+    if provider_filter:
+        rows = [r for r in rows
+                if (r.get("provider") or "").strip().lower() == provider_filter]
+    return rows[0] if len(rows) == 1 else None
+
+
+# ---------------------------------------------------------------------------
+# Request consistency
+# ---------------------------------------------------------------------------
+
+def wants_annotation(value):
+    """The same test main.nf and update_refgenie.py apply to the annotation column."""
+    return str(value or "").strip().lower() == "true"
+
+
+def parse_aliases(value):
+    """'yeast; sacCer' -> ['yeast', 'sacCer']."""
+    return [a.strip() for a in str(value or "").split(";") if a.strip()]
+
+
+class RequestLedger:
+    """
+    What the rows accepted so far have claimed, so a later row can be checked
+    against them before anything is downloaded.
+
+    Both checks are offline and both were previously left to fail late or not at all:
+
+      * Two rows resolving to the same (provider, assembly, release) became two
+        identical download tasks publishing into one directory. Wasteful when the
+        rows agree; when they disagree on `annotation`, the provenance.json that
+        survives can be the sequence-only task's, and the GTF is then ingested
+        under the 'default' tag with its release lost.
+
+      * An alias names exactly one genome. The ingest already refuses to repoint
+        one, but only discovers the clash after every genome has been fetched.
+
+    The same alias on two rows is fine when both rows are the same genome - two
+    releases of one assembly, say - so the alias check compares (provider, assembly)
+    and ignores release.
+    """
+
+    def __init__(self):
+        self._targets = {}       # (provider, assembly, release) -> line number
+        self._alias_owner = {}   # alias -> ((provider, assembly), line number)
+
+    def conflict(self, lineno, provider, assembly, release, aliases):
+        """Why this row cannot stand beside the accepted ones, or None. Claims on None."""
+        genome = (str(provider).strip().lower(), assembly)
+        target = genome + (release,)
+
+        earlier = self._targets.get(target)
+        if earlier is not None:
+            pinned = f" release {release}" if release else ""
+            return (
+                f"resolves to {assembly} from '{provider}'{pinned}, which line "
+                f"{earlier} already requests. Merge the two rows into one, putting "
+                "both sets of aliases on it"
+            )
+
+        for alias in aliases:
+            owner = self._alias_owner.get(alias)
+            if owner is not None and owner[0] != genome:
+                (other_provider, other_assembly), other_line = owner
+                return (
+                    f"alias '{alias}' is already given to {other_assembly} from "
+                    f"'{other_provider}' on line {other_line}. An alias can name only "
+                    "one genome; give this row a different one"
+                )
+
+        self._targets[target] = lineno
+        for alias in aliases:
+            self._alias_owner.setdefault(alias, (genome, lineno))
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -429,6 +533,7 @@ def main():
     output_file = args.output_csv
 
     resolved_cache = load_cache(output_file)
+    ledger = RequestLedger()
 
     resolved_rows = []
     # Rows that could not be turned into a concrete assembly. Collected rather than
@@ -447,6 +552,7 @@ def main():
                 # Optional. Absent from older request CSVs, where DictReader yields
                 # None - which must read as "unpinned", not crash.
                 release = (row.get("release") or "").strip()
+                aliases = parse_aliases(row.get("aliases"))
 
                 if not query:
                     unresolved.append(
@@ -467,48 +573,40 @@ def main():
                 # ------------------------------------------------------------------
                 # Cache lookup
                 # ------------------------------------------------------------------
-                cached_row = resolved_cache.get((species, query))
+                # A changed provider or release is a cache miss rather than a
+                # mismatch to report: both are part of what identifies the request
+                # (see load_cache and cached_resolution).
+                cached_row = cached_resolution(
+                    resolved_cache, species, query, release, provider_filter
+                )
                 if cached_row is not None:
                     cached_assembly = (cached_row.get("assembly") or "").strip()
                     cached_provider = (cached_row.get("provider") or "").strip()
 
-                    # A provider filter added or changed since the cached run must not be
-                    # ignored: the cached assembly may come from a provider the user has
-                    # now explicitly ruled out.
-                    cached_release = (cached_row.get("release") or "").strip()
-
-                    if provider_filter and cached_provider.lower() != provider_filter:
-                        print(
-                            f"\n--- Cached resolution for '{species}' ({cached_assembly} from "
-                            f"'{cached_provider}') does not match the requested provider "
-                            f"'{provider_filter}'. Re-resolving. ---"
-                        )
-                    elif cached_release != release:
-                        # Same reasoning as the provider check above: a release added,
-                        # changed or removed since the cached run describes a different
-                        # download, so the cached answer must not stand in for it.
-                        print(
-                            f"\n--- Cached resolution for '{species}' ({cached_assembly}, "
-                            f"release '{cached_release or 'unpinned'}') does not match the "
-                            f"requested release '{release or 'unpinned'}'. Re-resolving. ---"
-                        )
-                    else:
-                        print(
-                            f"\n--- '{query}' for {species} already resolved to {cached_assembly}. "
-                            "Skipping search. ---"
-                        )
-                        # Rebuild the row rather than mutating the cached one, so stale or
-                        # unexpected columns in an older resolved CSV are not carried through.
-                        resolved_rows.append({
-                            "species": species,
-                            "assembly": cached_assembly,
-                            "provider": cached_provider,
-                            "annotation": annotation,
-                            "query": query,
-                            "release": release,
-                        })
-                        write_resolved(output_file, resolved_rows)
+                    print(
+                        f"\n--- '{query}' for {species} already resolved to {cached_assembly}. "
+                        "Skipping search. ---"
+                    )
+                    reason = ledger.conflict(
+                        lineno, cached_provider, cached_assembly, release, aliases
+                    )
+                    if reason:
+                        print(f"ERROR: {reason}.", file=sys.stderr)
+                        unresolved.append((lineno, species, query, reason))
                         continue
+                    # Rebuild the row rather than mutating the cached one, so stale or
+                    # unexpected columns in an older resolved CSV are not carried through.
+                    resolved_rows.append({
+                        "species": species,
+                        "assembly": cached_assembly,
+                        "provider": cached_provider,
+                        "annotation": annotation,
+                        "query": query,
+                        "release": release,
+                        "aliases": ";".join(aliases),
+                    })
+                    write_resolved(output_file, resolved_rows)
+                    continue
 
                 # ------------------------------------------------------------------
                 # Network search
@@ -577,6 +675,26 @@ def main():
                         continue
                     print(f"Selected: {chosen.assembly} from {chosen.provider}.")
 
+                # An annotation the provider does not publish cannot be delivered, and
+                # the search result already says so. Without this check the genome was
+                # downloaded in full first - genomepy logs a warning and carries on -
+                # and the request only failed at ingest, with "no GTF found".
+                #
+                # Not applied on a cache hit: the cached row records which assembly was
+                # chosen, not whether it is annotated, and looking that up would cost
+                # the network search the cache exists to avoid. A cached row switched
+                # to annotation=true still fails at ingest, as before.
+                if wants_annotation(annotation) and not chosen.has_annotation:
+                    reason = (
+                        f"annotation was requested, but genomepy reports none for "
+                        f"{chosen.assembly} on '{chosen.provider}'. Set annotation to "
+                        "false for this row, or choose an assembly or provider that "
+                        "publishes one"
+                    )
+                    print(f"ERROR: {reason}.", file=sys.stderr)
+                    unresolved.append((lineno, species, query, reason))
+                    continue
+
                 # Validate the release against what was actually selected. This is the
                 # only point where both are known: the release must exist AND contain
                 # this assembly, and when the request named no provider, whether the
@@ -588,6 +706,14 @@ def main():
                         unresolved.append((lineno, species, query, reason))
                         continue
 
+                reason = ledger.conflict(
+                    lineno, chosen.provider, chosen.assembly, release, aliases
+                )
+                if reason:
+                    print(f"ERROR: {reason}.", file=sys.stderr)
+                    unresolved.append((lineno, species, query, reason))
+                    continue
+
                 resolved_rows.append({
                     "species": species,
                     "assembly": chosen.assembly,
@@ -595,6 +721,7 @@ def main():
                     "annotation": annotation,
                     "query": query,
                     "release": release,
+                    "aliases": ";".join(aliases),
                 })
                 # Flush after every resolution so an interrupted interactive session
                 # keeps the answers already given.

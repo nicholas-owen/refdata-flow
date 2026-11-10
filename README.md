@@ -54,6 +54,18 @@ With Miniforge installed, `mamba` is available and you can set `conda.useMamba =
 
 Dependency versions are pinned and hash-locked in `requirements.txt` for reproducibility. To upgrade, edit `requirements.in` and regenerate with `pip-compile --generate-hashes --output-file=requirements.txt requirements.in`.
 
+### Running the tests
+
+The tests need no network and no extra packages. Run them with the pipeline's own interpreter, after `run_pipeline.sh` has been run once so that `.venv` exists:
+
+```bash
+.venv/bin/python -m unittest discover -s tests -v
+```
+
+- `tests/test_resolve.py` drives the resolver with the provider search faked.
+- `tests/test_update_refgenie.py` covers the vault naming, alias and default-tag rules.
+- `tests/test_ingest_e2e.py` builds a real refgenie vault from 40-base toy genomes: one assembly from two providers, plus an older pinned release. It is skipped, with the reason printed, where refgenie or `samtools` is missing or the filesystem has no symlinks.
+
 ## Directory Structure
 
 ```
@@ -92,6 +104,12 @@ Mus_musculus,mouse,,true,mm39;mm,
 > **It is rejected, not ignored, for other providers.** genomepy accepts a release for GENCODE, UCSC and NCBI and then silently downloads the current files anyway, which would record a version that was never used. A `release` on any provider but Ensembl therefore fails the row rather than running unpinned. UCSC cannot be pinned even in principle: it patches assemblies in place and builds annotations live from its MySQL server.
 >
 > The annotation version is **recorded either way**, pinned or not - see *Annotation release tagging* below.
+
+> **Three things are checked before anything is downloaded**, and each fails the row with the line number and the reason:
+>
+> - **`annotation=true` on an assembly with no annotation.** The provider search already says whether one is published, so the request stops here instead of after the genome has been fetched.
+> - **Two rows that resolve to the same download.** `GRCh38` and `human` both resolve to `GRCh38.p14`; that is one genome, so put it on one row with both sets of aliases. The same assembly at two *releases*, or from two *providers*, is two different downloads and is allowed.
+> - **One alias on two different genomes.** An alias names exactly one genome. Sharing an alias between two releases of the same assembly is fine, because that is the same genome.
 
 > **Aliases are labels, not conversions.** An alias is a second name for whatever you downloaded; it does not change the data. Aliasing an Ensembl assembly as `hg38` is legal and tempting, but `hg38` is UCSC's name and implies UCSC conventions: `chr1`, `chr2`, `chrM`. An Ensembl genome has contigs named `1`, `2`, `MT`, so `refgenie seek hg38/fasta` would hand a downstream tool exactly the naming it did not expect. Keep provider-specific nicknames for genomes from that provider.
 
@@ -166,6 +184,9 @@ For each requested assembly, Nextflow will generate an output directory structur
 Example:
 `/path/to/your/custom/storage/ensembl/Homo_sapiens/GRCh38.p14/`
 
+A request pinned to a release gets one extra level, so two releases of the same assembly can be downloaded side by side without one overwriting the other:
+`/path/to/your/custom/storage/Ensembl/Homo_sapiens/release-116/GRCh38.p14/`
+
 The `provider` and `species` directory names are used **exactly as they appear in your resolved CSV** - so a `provider` of `ensembl` produces `ensembl/`, not `Ensembl/`. Keep the casing consistent between runs, or you will end up with parallel directory trees for the same provider.
 
 Inside each assembly directory, you will find:
@@ -212,6 +233,8 @@ Ingesting a newer release adds a tag rather than replacing one. The new release 
 refgenie seek human/ensembl_gtf:115
 ```
 
+"Newer" means the higher release, not the one ingested most recently. Pinning release 110 for one analysis when 116 is already in the vault adds `:110` as a tag and leaves the default at 116.
+
 If the release cannot be identified - an unreachable provider, say - the asset is tagged `default` and a warning is printed. Nothing fails, but two releases could later collide under that tag.
 
 ### Example Directory Structure
@@ -242,10 +265,13 @@ If the release cannot be identified - an unreachable provider, say - the asset i
     │       └── GRCh38.p14_ensembl_TSS.bed -> ...
     │
     ├── GRCh38/                     <-- assembly stem
-    ├── GRCh38_p14/                 <-- refgenie's internal name ("." becomes "_")
+    ├── GRCh38_p14/                 <-- the same name with "." as "_"
+    ├── GRCh38_p14_ensembl/         <-- the vault name: <assembly>_<provider>, always present
     └── human/                      <-- your custom alias from the CSV
                                         (each with the same fasta/ and ensembl_gtf/ trees)
 ```
+
+> **The same assembly from two providers.** Ensembl and GENCODE both publish `GRCh38.p14` and `GRCm39`, with different contig names. Each genome is built under `<assembly>_<provider>` (`GRCm39_ensembl`, `GRCm39_gencode`), which is always unambiguous. The bare names (`GRCm39`) go to whichever was ingested first and stay there; the second is logged as reachable under its vault name. Use the vault name, or your own alias, whenever you hold both.
 
 Three things this layout is easy to get wrong:
 
@@ -327,6 +353,12 @@ Two operational notes:
 
 ## Version History
 
+- **Unreleased**: Correctness fixes from the 2026-11-10 review. Behaviour changes - read before upgrading.
+  - **Vault genomes are named `<assembly>_<provider>`.** Previously the assembly name alone, which Ensembl and GENCODE share for `GRCh38.p14` and `GRCm39`: the second provider's annotation was filed under the first provider's genome. Bare assembly names remain as aliases, first come first served. A vault built earlier picks up the new name when its download directory is re-ingested; if that directory was already removed with `--cleanup`, the row is reported with "no genome named ...".
+  - **Two releases of one assembly can be requested together.** A pinned request downloads into `<provider>/<species>/release-<n>/<assembly>/`, and the resolver cache is keyed on the release as well.
+  - **The default annotation tag only moves forward.** Ingesting an older release no longer takes the default from a newer one.
+  - **Three checks moved to resolve time**: `annotation=true` on an unannotated assembly, two rows resolving to the same download, and one alias on two different genomes. All previously surfaced after downloading, or not at all.
+  - **`requests_resolved.csv` gains an `aliases` column**, and `bin/update_refgenie.py` no longer takes the raw request CSV as an argument.
 - **0.9.1**: Harm-reduction release. Behaviour changes - read before upgrading.
   - **Source data is no longer deleted by default.** Cleanup of the downloaded assembly directories is now opt-in via `run_pipeline.sh --cleanup`, and even then runs only after the FASTA (and the GTF, if annotation was requested) is verified into the vault. Previously it ran unconditionally, including after a partially-failed ingest.
   - **Provenance survives cleanup.** `provenance.json`, genomepy's `README.txt` and `assembly_report.txt` are copied to `<outdir>/provenance/<provider>/<species>/<assembly>/` before any removal. Previously all three were destroyed by the cleanup step that immediately followed their creation.

@@ -17,6 +17,29 @@ def safe(String val, String field) {
     return val
 }
 
+// Refuse a request list in which two rows name the same download.
+//
+// bin/resolve.py already rejects these, so this only fires for a resolved CSV that
+// was written by hand and run with a bare `nextflow run`. It is here because the
+// failure is otherwise silent: two FETCH_GENOME tasks with one publish directory
+// simply overwrite each other, and when the rows disagree on `annotation` the
+// provenance.json that survives can belong to the sequence-only task.
+//
+// Each row is the tuple built in the workflow below: species, assembly, provider,
+// annotation, release. Provider is compared case-insensitively because genomepy
+// reports 'Ensembl' while a hand-written file may say 'ensembl'.
+def rejectDuplicates(List rows) {
+    def seen = [:]
+    rows.each { row ->
+        def provider = (row[2] ?: '').toString().toLowerCase()
+        def key = "${provider}/${row[1]}@${row[4] ?: 'current'}".toString()
+        if( seen.containsKey(key) )
+            error "Duplicate request for ${row[1]} from '${row[2]}' (release: ${row[4] ?: 'current'}). Each provider, assembly and release may appear once; merge the rows."
+        seen[key] = true
+    }
+    return rows
+}
+
 process FETCH_GENOME {
     tag "${species}_${assembly}"
 
@@ -31,7 +54,18 @@ process FETCH_GENOME {
     // Closure form (not a plain string) so the input variables `provider` and
     // `species` are resolved in the task scope - a bare "${provider}" string
     // raises "No such variable: provider" (see nextflow-io/nextflow#2811).
-    publishDir { "${params.outdir}/${provider}/${species}" }, mode: 'copy'
+    //
+    // A pinned release gets its own directory level. Without it, two releases of one
+    // assembly published to the same <provider>/<species>/<assembly>/ and the second
+    // overwrote the first, so the ingest tagged both rows from whichever
+    // provenance.json landed last. An unpinned request keeps the original layout.
+    // bin/update_refgenie.py builds the same path; keep the two in step.
+    //
+    // `release` is safe to interpolate here: the workflow block has already
+    // required it to be empty or all digits.
+    publishDir {
+        release ? "${params.outdir}/${provider}/${species}/release-${release}" : "${params.outdir}/${provider}/${species}"
+    }, mode: 'copy'
 
     input:
     tuple val(species), val(assembly), val(provider), val(annotation), val(release)
@@ -94,7 +128,20 @@ workflow {
         .splitCsv(header: true)
         // row.release is null when the column is absent, which is the unpinned case
         // and must stay valid: older resolved CSVs predate the column.
-        .map { row -> tuple(row.species, row.assembly, row.provider, row.annotation, row.release ?: '') }
+        //
+        // It is validated here as well as in the process script, because it now
+        // forms part of the publish path, and publishDir is resolved independently
+        // of the script block that carries the other check.
+        .map { row ->
+            def rel = (row.release ?: '').toString().trim()
+            if( rel && !(rel ==~ /^[0-9]+$/) )
+                error "Unsafe or non-numeric release: '${rel}'"
+            tuple(row.species, row.assembly, row.provider, row.annotation, rel)
+        }
+        // Collected so the whole list can be checked for duplicates before any
+        // task starts; flatMap then emits the rows one at a time again.
+        .toList()
+        .flatMap { rows -> rejectDuplicates(rows) }
         .set { requests_ch }
 
     FETCH_GENOME(requests_ch)
