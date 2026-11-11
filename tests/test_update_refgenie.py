@@ -160,6 +160,51 @@ class CurrentDefaultTag(ConfigTestCase):
             ingest.current_default_tag(self.config_file + ".absent", "GRCm39_ensembl", "x"))
 
 
+class FastaHasDictionary(ConfigTestCase):
+    def setUp(self):
+        super().setUp()
+        self.write({
+            "genomes": {
+                ENSEMBL: {
+                    "aliases": ["GRCm39_ensembl"],
+                    "assets": {"fasta": {"default_tag": "default", "tags": {"default": {
+                        "seek_keys": {"fasta": "x.fa", "fai": "x.fa.fai", "dict": "x.dict"}}}}},
+                },
+                GENCODE: {
+                    "aliases": ["GRCm39_gencode"],
+                    "assets": {"fasta": {"default_tag": "default", "tags": {"default": {
+                        "seek_keys": {"fasta": "y.fa", "fai": "y.fa.fai"}}}}},
+                },
+                "f" * 48: {"aliases": ["empty_ncbi"], "assets": {}},
+            }
+        })
+        self.dictionary = os.path.join(
+            os.path.dirname(self.config_file), "data", ENSEMBL, "fasta", "default", "x.dict")
+
+    def write_dictionary(self):
+        os.makedirs(os.path.dirname(self.dictionary))
+        with open(self.dictionary, "w") as f:
+            f.write("@HD\tVN:1.0\n")
+
+    def test_true_when_the_dictionary_file_is_there(self):
+        self.write_dictionary()
+        self.assertIs(ingest.fasta_has_dictionary(self.config_file, "GRCm39_ensembl"), True)
+
+    def test_false_when_the_config_lists_one_but_the_file_is_missing(self):
+        # What a skipped rebuild leaves behind: refgenie records the new recipe's
+        # seek keys without running its commands.
+        self.assertIs(ingest.fasta_has_dictionary(self.config_file, "GRCm39_ensembl"), False)
+
+    def test_false_for_a_fasta_asset_built_by_the_stock_recipe(self):
+        self.assertIs(ingest.fasta_has_dictionary(self.config_file, "GRCm39_gencode"), False)
+
+    def test_none_when_there_is_nothing_to_judge(self):
+        # Not False: False means "rebuild this", and there is nothing to rebuild.
+        for name in ("empty_ncbi", "not_in_the_vault"):
+            self.assertIsNone(ingest.fasta_has_dictionary(self.config_file, name), name)
+        self.assertIsNone(ingest.fasta_has_dictionary(self.config_file + ".absent", "x"))
+
+
 class ParseAliases(unittest.TestCase):
     def test_splits_on_semicolons_and_drops_blanks(self):
         self.assertEqual(ingest.parse_aliases(" yeast ; sacCer;;"), ["yeast", "sacCer"])

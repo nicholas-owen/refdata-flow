@@ -296,6 +296,11 @@ def main():
             "assembly": args.assembly,
             "provider": args.provider,
             "annotation_requested": args.annotation,
+            # The release the request pinned, empty when it took the current one.
+            # With assembly and provider this identifies which request a download
+            # directory answers; bin/update_refgenie.py checks all three before
+            # ingesting a directory it was handed by position.
+            "release_requested": release,
             "tool": "genomepy"
         }
 

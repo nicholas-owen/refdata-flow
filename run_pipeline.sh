@@ -336,7 +336,12 @@ if [ "$DRY_RUN" -eq 1 ]; then
 fi
 
 echo ""
-echo "[Step 2] Launching Nextflow pipeline..."
+echo "[Step 2] Launching Nextflow pipeline (download, then catalogue in refgenie)..."
+# Nextflow now runs both remaining stages. Cataloguing used to be a third step
+# here, run after Nextflow returned; it is the REGISTER process in main.nf, which
+# starts once every download has finished and reads each one as a task input
+# rather than from the copy published under --outdir.
+#
 # Assemble Nextflow arguments. --debug streams each task's progress messages to
 # the console (process `debug`); -ansi-log false makes that streamed output
 # readable instead of being repainted over by the single-line status display.
@@ -344,25 +349,26 @@ echo "[Step 2] Launching Nextflow pipeline..."
 # wrapper and the config each held their own copy of this path, agreeing only by
 # coincidence; passing it here makes the wrapper authoritative and leaves the config
 # default for a bare `nextflow run main.nf`.
-NF_ARGS="-profile conda --input $RESOLVED_CSV --outdir $OUTDIR -resume"
+#
+# --venv_bin tells REGISTER which Python environment holds refgenie: the one this
+# script built above, by absolute path, so it does not depend on where Nextflow
+# thinks the project directory is.
+#
+# An array, not a string: a string is split on spaces when expanded, so an
+# --outdir with a space in it became two arguments.
+NF_ARGS=(-profile conda --input "$RESOLVED_CSV" --outdir "$OUTDIR" --venv_bin "$VENV_BIN" -resume)
+if [ "$CLEANUP" -eq 1 ]; then
+    # Sources are not kept under --outdir, and copies an earlier run left there
+    # are removed once each genome is verified into the vault.
+    echo "[Step 2] --cleanup: downloaded sources will not be kept once they are in the vault."
+    NF_ARGS+=(--cleanup true)
+fi
 if [ "$DEBUG" -eq 1 ]; then
-    echo "[Step 2] Debug mode: streaming per-task download progress."
-    NF_ARGS="$NF_ARGS --debug true -ansi-log false"
+    echo "[Step 2] Debug mode: streaming per-task progress."
+    NF_ARGS+=(--debug true -ansi-log false)
 fi
 # The -resume flag ensures we don't redownload existing datasets
-nextflow run main.nf $NF_ARGS
-
-echo ""
-echo "[Step 3] Building Refgenie Configuration..."
-# Only the resolved CSV is passed. The ingest used to read the raw request as well,
-# to look each row's aliases back up; bin/resolve.py now carries them on the
-# resolved row, so there is nothing left for it to join against.
-REFGENIE_ARGS=("$RESOLVED_CSV" "$OUTDIR")
-if [ "$CLEANUP" -eq 1 ]; then
-    echo "[Step 3] --cleanup: verified source directories will be removed after ingest."
-    REFGENIE_ARGS+=(--cleanup)
-fi
-"$VENV_DIR/bin/python" bin/update_refgenie.py "${REFGENIE_ARGS[@]}"
+nextflow run main.nf "${NF_ARGS[@]}"
 
 echo ""
 ELAPSED_TIME=$(($SECONDS - $START_TIME))
@@ -377,6 +383,10 @@ if [ "$CLEANUP" -eq 0 ]; then
     echo ""
     echo "  Downloaded sources were retained under $OUTDIR/<provider>/<species>/."
     echo "  Re-run with --cleanup to remove them once you are satisfied with the vault."
+else
+    echo ""
+    echo "  Downloaded sources were not kept under $OUTDIR. Nextflow's own copies are"
+    echo "  still in work/ until you run: bash run_pipeline.sh --clean"
 fi
 echo "=========================================="
 # end of run_pipeline.sh

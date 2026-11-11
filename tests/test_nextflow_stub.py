@@ -77,9 +77,16 @@ class NextflowTestCase(unittest.TestCase):
         return path
 
     @classmethod
-    def nextflow(cls, requests, outdir, *extra, stub=True, env=None):
+    def nextflow(cls, requests, outdir, *extra, stub=True, env=None,
+                 register=False, venv_bin=BIN_DIR):
+        # Most tests here are about the download side and pass --register false, so
+        # they run wherever nextflow does. The Registration tests turn it on and
+        # point REGISTER at the interpreter running this suite, which is the
+        # pipeline's own environment when the suite is run as the README says.
         command = ["nextflow", "run", MAIN_NF, "-profile", "standard", "-ansi-log", "false",
-                   "--input", requests, "--outdir", outdir, *extra]
+                   "--input", requests, "--outdir", outdir]
+        command += ["--venv_bin", venv_bin] if register else ["--register", "false"]
+        command += extra
         if stub:
             command.append("-stub")
         return subprocess.run(
@@ -125,10 +132,15 @@ class StubRun(NextflowTestCase):
         with open(self.published("GENCODE", "Mus_musculus", "toyAsm", "provenance.json")) as f:
             self.assertIs(json.load(f)["stub"], True)
 
+    def test_06_no_registration_was_attempted(self):
+        self.assertNotIn("REGISTER", self.run_result.stdout)
+        self.assertFalse(os.path.exists(self.published("refgenie_export.yaml")))
+
     @unittest.skipIf(ingest_unavailable(), ingest_unavailable())
-    def test_06_ingest_finds_everything_the_workflow_published(self):
-        # main.nf and update_refgenie.py each build the download path on their own.
-        # This is the only test in which one's output is the other's input.
+    def test_07_ingest_run_by_hand_finds_everything_the_workflow_published(self):
+        # bin/update_refgenie.py can still be run on its own against the published
+        # layout, with no --source. main.nf and the script each build that path
+        # independently; here one's output is the other's input.
         env = dict(os.environ, PATH=BIN_DIR + os.pathsep + os.environ.get("PATH", ""))
         result = subprocess.run(
             [sys.executable, INGEST, self.requests, self.outdir],
@@ -151,13 +163,132 @@ class StubRun(NextflowTestCase):
                          {"stub", "110"})
 
 
+def load_vault(outdir):
+    """{alias: genome entry} for every alias in the vault's config."""
+    with open(os.path.join(outdir, "refgenie_export.yaml")) as f:
+        genomes = yaml.safe_load(f)["genomes"]
+    return {alias: genome for genome in genomes.values() for alias in genome["aliases"]}
+
+
+@unittest.skipIf(ingest_unavailable(), ingest_unavailable())
+class Registration(NextflowTestCase):
+    """Download and catalogue in one Nextflow run, as run_pipeline.sh now does it."""
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        cls.outdir = os.path.join(cls.work, "out")
+        cls.requests = cls.write_requests("requests_resolved.csv", REQUESTS)
+        cls.run_result = cls.nextflow(cls.requests, cls.outdir, register=True)
+
+    def published(self, *parts):
+        return os.path.join(self.outdir, *parts)
+
+    def assert_vault_complete(self, outdir):
+        vault = load_vault(outdir)
+        self.assertEqual(len({id(genome) for genome in vault.values()}), 3)
+        self.assertIsNot(vault["toyAsm_ensembl"], vault["toyAsm_gencode"])
+        self.assertEqual(set(vault["toyAsm_gencode"]["assets"]), {"fasta", "gencode_gtf"})
+        self.assertEqual(set(vault["seqOnly_ncbi"]["assets"]), {"fasta"})
+        # The pinned and the unpinned Ensembl download share an assembly name and a
+        # directory name. Both tags present means each was matched to its own row.
+        self.assertEqual(set(vault["toyAsm_ensembl"]["assets"]["ensembl_gtf"]["tags"]),
+                         {"stub", "110"})
+        # Built by recipes/fasta.json, so each genome has its sequence dictionary,
+        # beside its FASTA under the alias name. The file is checked, not the
+        # config: refgenie can list a seek key for a file it never wrote.
+        for name in ("toyAsm_ensembl", "toyAsm_gencode", "seqOnly_ncbi"):
+            directory = os.path.join(outdir, "alias", name, "fasta", "default")
+            for filename in (f"{name}.fa", f"{name}.fa.fai", f"{name}.dict"):
+                self.assertTrue(os.path.isfile(os.path.join(directory, filename)), filename)
+        return vault
+
+    def test_01_run_succeeds_with_one_register_task(self):
+        self.assertEqual(self.run_result.returncode, 0, self.run_result.stdout[-3000:])
+        self.assertEqual(self.run_result.stdout.count("Submitted process > REGISTER"), 1)
+
+    def test_02_every_download_is_in_the_vault(self):
+        self.assert_vault_complete(self.outdir)
+
+    def test_03_bare_assembly_name_goes_to_the_first_row_of_the_request(self):
+        # Ensembl is listed first. Which download finished first must not matter.
+        vault = load_vault(self.outdir)
+        self.assertIs(vault["toyAsm"], vault["toyAsm_ensembl"])
+        self.assertEqual(set(vault["toyAsm_gencode"]["aliases"]), {"toyAsm_gencode", "mouse_gc"})
+
+    def test_04_sources_are_kept_by_default(self):
+        self.assertTrue(os.path.isfile(
+            self.published("Ensembl", "Mus_musculus", "release-110", "toyAsm", "toyAsm.fa.gz")))
+        self.assertTrue(os.path.isfile(
+            self.published("GENCODE", "Mus_musculus", "toyAsm", "toyAsm.fa.gz")))
+
+    def test_05_resumed_run_registers_again_and_changes_nothing(self):
+        before = {alias: sorted(genome["assets"]) for alias, genome in load_vault(self.outdir).items()}
+        result = self.nextflow(self.requests, self.outdir, "-resume", register=True)
+        self.assertEqual(result.returncode, 0, result.stdout[-3000:])
+        self.assertIn("Cached process > FETCH_GENOME", result.stdout)
+        # REGISTER is never cached: the vault may have changed outside the workflow.
+        self.assertIn("Submitted process > REGISTER", result.stdout)
+        after = {alias: sorted(genome["assets"]) for alias, genome in load_vault(self.outdir).items()}
+        self.assertEqual(before, after)
+
+    def test_06_cleanup_false_on_the_command_line_still_keeps_sources(self):
+        # A command-line value arrives as text, and the text 'false' is true to
+        # Groovy. Read naively, this switched cleanup ON.
+        outdir = os.path.join(self.work, "cleanup-false.out")
+        result = self.nextflow(self.requests, outdir, "--cleanup", "false", register=True)
+        self.assertEqual(result.returncode, 0, result.stdout[-3000:])
+        self.assertTrue(os.path.isfile(
+            os.path.join(outdir, "Ensembl", "Mus_musculus", "toyAsm", "toyAsm.fa.gz")))
+
+    def test_07_cleanup_keeps_no_sources_but_keeps_their_provenance(self):
+        outdir = os.path.join(self.work, "cleanup-true.out")
+        result = self.nextflow(self.requests, outdir, "--cleanup", "true", register=True)
+        self.assertEqual(result.returncode, 0, result.stdout[-3000:])
+        self.assert_vault_complete(outdir)
+        for provider in ("Ensembl", "GENCODE", "NCBI"):
+            self.assertFalse(os.path.exists(os.path.join(outdir, provider)), provider)
+        with open(os.path.join(outdir, "provenance", "Ensembl", "Mus_musculus",
+                               "release-110", "toyAsm", "provenance.json")) as f:
+            self.assertEqual(json.load(f)["release_requested"], "110")
+        with open(os.path.join(outdir, "provenance", "Ensembl", "Mus_musculus",
+                               "toyAsm", "provenance.json")) as f:
+            self.assertEqual(json.load(f)["release_requested"], "")
+
+    def test_90_cleanup_removes_sources_an_earlier_run_kept(self):
+        # Sorted last: it empties the published tree the tests above look at.
+        self.assertTrue(os.path.isdir(self.published("Ensembl")))
+        result = self.nextflow(self.requests, self.outdir, "-resume", "--cleanup", "true",
+                               register=True)
+        self.assertEqual(result.returncode, 0, result.stdout[-3000:])
+        for parts in (("Ensembl", "Mus_musculus", "toyAsm"),
+                      ("Ensembl", "Mus_musculus", "release-110", "toyAsm"),
+                      ("GENCODE", "Mus_musculus", "toyAsm"),
+                      ("NCBI", "Foo_bar", "seqOnly")):
+            self.assertFalse(os.path.exists(self.published(*parts)), "/".join(parts))
+            self.assertTrue(os.path.isfile(
+                self.published("provenance", *parts, "provenance.json")), "/".join(parts))
+        self.assert_vault_complete(self.outdir)
+
+
 class RequestValidation(NextflowTestCase):
-    def rejected(self, name, content):
+    def rejected(self, name, content, *extra, **options):
         result = self.nextflow(self.write_requests(name, content),
-                               os.path.join(self.work, name + ".out"))
+                               os.path.join(self.work, name + ".out"), *extra, **options)
         self.assertNotEqual(result.returncode, 0, result.stdout[-2000:])
         self.assertNotIn("Submitted process", result.stdout, "a task started before the check")
         return result.stdout
+
+    def test_missing_python_environment_stops_the_run_before_any_download(self):
+        # Found after the downloads, this would cost hours.
+        output = self.rejected("novenv.csv", HEADER + "Foo_bar,seqOnly,NCBI,false,seqOnly,,\n",
+                               register=True, venv_bin=os.path.join(self.work, "no-such-venv"))
+        self.assertIn("No Python environment", output)
+
+    def test_number_parameter_that_is_not_a_number_is_refused(self):
+        output = self.rejected("badnumber.csv", HEADER + "Foo_bar,seqOnly,NCBI,false,seqOnly,,\n",
+                               "--max_retries", "lots")
+        self.assertIn("--max_retries must be a whole number", output)
 
     def test_duplicate_download_is_refused_before_any_task_starts(self):
         output = self.rejected("duplicate.csv", HEADER

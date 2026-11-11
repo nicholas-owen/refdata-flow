@@ -8,7 +8,7 @@ This project provides an automated workflow for downloading bioinformatics refer
 It runs in **three stages**, wrapped by a single script:
 1. **Resolve** - an interactive Python step (`resolve.py`) turns generic queries (like `grch38` or `mouse`) into exact assembly requests.
 2. **Download** - a **Nextflow** pipeline fetches the files in parallel via the **genomepy** engine, suitable for HPC compute nodes.
-3. **Catalogue** - `update_refgenie.py` registers the results in a refgenie vault with human-readable aliases.
+3. **Catalogue** - once every download has finished, the same Nextflow run registers the results in a refgenie vault with human-readable aliases (the `REGISTER` process, which runs `update_refgenie.py`).
 
 ## Prerequisites
 
@@ -65,7 +65,7 @@ The tests need no network and no extra packages. Run them with the pipeline's ow
 - `tests/test_resolve.py` drives the resolver with the provider search faked.
 - `tests/test_update_refgenie.py` covers the vault naming, alias and default-tag rules.
 - `tests/test_ingest_e2e.py` builds a real refgenie vault from 40-base toy genomes: one assembly from two providers, plus an older pinned release. It is skipped, with the reason printed, where refgenie or `samtools` is missing or the filesystem has no symlinks.
-- `tests/test_nextflow_stub.py` executes `main.nf`. Most of it uses `nextflow run -stub`, which replaces the download with a toy assembly directory and leaves everything around it real: request validation, the duplicate guard, the publish layout. One test hands that output to the ingest, so the two stages are checked against each other. The retry tests run the real script with a `python3` that only fails. It is skipped where `nextflow` is not on `PATH`, and takes about a minute.
+- `tests/test_nextflow_stub.py` executes `main.nf`. Most of it uses `nextflow run -stub`, which replaces the download with a toy assembly directory and leaves everything around it real: request validation, the duplicate guard, the publish layout. The `Registration` tests run the whole thing, download and catalogue, in one Nextflow run, with and without `--cleanup`. The retry tests run the real script with a `python3` that only fails. It is skipped where `nextflow` is not on `PATH`, and takes about two minutes.
 
 You can run the stub by hand too. Nothing is downloaded, and the `provenance.json` it writes is marked `"stub": true`:
 
@@ -79,7 +79,7 @@ nextflow run main.nf -stub -profile standard --input requests/requests_resolved.
 ├── bin/
 │   ├── download.py          # Core Python script used by Nextflow
 │   ├── resolve.py           # Interactive Python pre-flight wizard
-│   └── update_refgenie.py   # Post-processing script to automate the refgenie catalogue
+│   └── update_refgenie.py   # Registers downloads in the refgenie vault (run by Nextflow's REGISTER step)
 ├── data/
 │   └── references/          # Default output directory for genomes
 ├── main.nf                  # The Nextflow pipeline
@@ -131,7 +131,15 @@ bash run_pipeline.sh requests/requests_raw.csv --outdir /path/to/your/custom/sto
 This script will automatically:
 1. **Resolve**: Parse your `requests/requests_raw.csv`. It connects to the databases and interactively prompts you if there are multiple matches for your generic queries.
 2. **Download**: Automatically launch the Nextflow pipeline on the resolved targets using Conda. It always passes `-resume`, so genomes that completed in a previous run are skipped (see [Resuming an Interrupted Run](#-pro-tip-resuming-an-interrupted-run) for the limits).
-3. **refgenie catalogue**: Finally, it automatically initializes a `refgenie_export.yaml` for you (if one doesn't exist yet), computes the sequence digests, and links your aliases. The downloaded source directories are **kept** unless you pass `--cleanup` (see below).
+3. **refgenie catalogue**: Finally, in the same Nextflow run, it automatically initializes a `refgenie_export.yaml` for you (if one doesn't exist yet), computes the sequence digests, and links your aliases. The downloaded source directories are **kept** unless you pass `--cleanup` (see below).
+
+> **Cataloguing is part of the Nextflow run.** It used to be a separate step the wrapper ran after Nextflow returned. It is now the `REGISTER` process, with three properties worth knowing:
+>
+> - **One task, in request order.** Genomes are registered in the order they appear in your request file, not the order their downloads finish. That order decides who gets a bare assembly name when two providers share it, so it must not vary from run to run.
+> - **It always runs on the machine that launched Nextflow**, whatever executor a profile selects, using the Python environment `run_pipeline.sh` builds. It is never cached, so every run re-checks the vault; for a genome already there this takes seconds.
+> - **A download failure stops before it.** If any download fails after its retries, nothing is registered in that run. Re-running picks up the completed downloads from the resume cache.
+>
+> To download without cataloguing, run Nextflow directly with `--register false`.
 
 ### 💡 Pro-Tip: Skipping the Wizard & Caching
 The interactive wizard remembers your choices. If you run the pipeline again to add a new species, it will look at `requests/requests_resolved.csv`. If an older species has already been resolved, **it will automatically skip the slow network search and interactive prompt** for that species to save time. 
@@ -140,7 +148,7 @@ If you ever *want* to change the assembly for a species, simply delete that spec
 
 ### 🗄️ Reclaiming space: `--cleanup` (opt-in)
 
-Once a genome has been ingested into the refgenie vault, its original download directory is redundant. Passing `--cleanup` removes it:
+Once a genome has been ingested into the refgenie vault, its original download directory is redundant. With `--cleanup` the sources are not kept under `--outdir`, and copies that an earlier run left there are removed:
 ```bash
 bash run_pipeline.sh requests/requests_raw.csv --cleanup
 ```
@@ -148,6 +156,8 @@ Two safeguards apply, because deleting downloaded reference data is not always r
 
 - **Nothing is removed unless the ingest is verified.** The FASTA must have been registered, and if you requested annotation, the GTF must have been registered too. A partial ingest leaves the source directory in place and the run exits non-zero.
 - **Provenance survives cleanup.** Before removal, `provenance.json`, genomepy's `README.txt` (source URLs) and, where the provider supplies an assembly accession, `assembly_report.txt` (sequence-name mappings between UCSC / Ensembl / GenBank accessions) are copied to `<outdir>/provenance/<provider>/<species>/<assembly>/`, which is never deleted. The remaining files are the sequence itself and indexes that refgenie regenerates in the vault.
+
+Nextflow's own copy of each download stays in `work/` either way, which is what lets a later run resume. It goes when you run `bash run_pipeline.sh --clean`.
 
 Prior to 0.9.1 this cleanup ran unconditionally, including on partially-failed ingests, and took the provenance files with it.
 
@@ -264,6 +274,7 @@ If the release cannot be identified - an unreachable provider, say - the asset i
 │       ├── fasta/default/
 │       │   ├── 89c2a7e1....fa          <-- note: decompressed by the fasta recipe
 │       │   ├── 89c2a7e1....fa.fai
+│       │   ├── 89c2a7e1....dict        <-- sequence dictionary, for GATK and Picard
 │       │   └── 89c2a7e1....chrom.sizes
 │       └── ensembl_gtf/default/    <-- asset named for the provider recipe, not "annotation"
 │           ├── 89c2a7e1....gtf.gz
@@ -275,6 +286,7 @@ If the release cannot be identified - an unreachable provider, say - the asset i
     │   ├── fasta/default/
     │   │   ├── GRCh38.p14.fa     -> ../../../../data/89c2a7e1.../fasta/default/89c2a7e1....fa
     │   │   ├── GRCh38.p14.fa.fai -> ...
+    │   │   ├── GRCh38.p14.dict   -> ...
     │   │   └── GRCh38.p14.chrom.sizes -> ...
     │   └── ensembl_gtf/default/
     │       ├── GRCh38.p14.gtf.gz -> ../../../../data/89c2a7e1.../ensembl_gtf/default/...
@@ -294,6 +306,29 @@ Three things this layout is easy to get wrong:
 - **Every alias points straight at the digest directory.** Aliases are not chained through one another, so removing one does not affect the rest.
 - **The symlinks are per file, not per directory**, and each is renamed to the alias. So `alias/human/fasta/default/` contains `human.fa`, and a tool given that path sees a sensible filename rather than a 48-character digest.
 - **The FASTA is stored uncompressed.** refgenie's `fasta` recipe runs `gzip -df` before indexing, so budget for the decompressed size in the vault on top of the retained `.fa.gz` download.
+
+### Sequence dictionary (GATK, Picard)
+
+Every genome is built with a sequence dictionary, made by `samtools dict`. It is part of the `fasta` asset, so it sits beside the FASTA and its index under every alias, with the same base name:
+
+```text
+alias/human/fasta/default/human.fa
+alias/human/fasta/default/human.fa.fai
+alias/human/fasta/default/human.dict
+```
+
+That placement is the point. GATK and Picard do not take the dictionary's path as an argument: given `-R human.fa` they look for `human.dict` in the same directory. So the path from `refgenie seek` works as a reference directly:
+
+```bash
+gatk HaplotypeCaller -R "$(refgenie seek human/fasta)" ...
+refgenie seek human/fasta.dict        # the dictionary itself, if you need its path
+```
+
+The dictionary describes the sequence and nothing else: contig names, lengths and MD5s. Its `UR` field names the FASTA file beside it, not a path on this machine, so the same sequence gives the same dictionary wherever the vault lives.
+
+To build it, the genome is registered with `recipes/fasta.json`, which is refgenie's stock `fasta` recipe plus that one command. The FASTA, its index and the chromosome sizes file are produced exactly as before.
+
+> **Genomes already in your vault get one on their next ingest.** A genome registered before this existed has no dictionary. The next time it is ingested from a download, its `fasta` asset is rebuilt once to add it; for a human genome that is a few minutes. The sequence digest, aliases and annotations are unchanged. A genome whose download is no longer available is left as it is, with a warning.
 
 ### Benefits for HPC Research
 1. **Zero Duplication:** If two researchers run an analysis (one explicitly asking for `GRCh38.p14`, the other asking for `grch38`), they are both funnelled through symlinks to the *exact same physical file* in the `data/` vault, rather than each maintaining a private copy. The alias layer is what makes that work: one download stays reachable under every name people naturally reach for, so nobody re-downloads a genome simply because their preferred name is not in the vault.
@@ -376,6 +411,10 @@ Two operational notes:
   - **Three checks moved to resolve time**: `annotation=true` on an unannotated assembly, two rows resolving to the same download, and one alias on two different genomes. All previously surfaced after downloading, or not at all.
   - **`requests_resolved.csv` gains an `aliases` column**, and `bin/update_refgenie.py` no longer takes the raw request CSV as an argument.
   - **Failed downloads are retried**, twice by default, with at most four downloads running at once. Previously the first failure ended the run and killed every other download in progress. See *Failed downloads are retried*.
+  - **Cataloguing moved into Nextflow.** The wrapper's third step is now the `REGISTER` process, which starts when every download has finished and reads each one as a task input instead of from the copy published under `--outdir`. `--cleanup` therefore no longer publishes sources and then deletes them; it does not publish them. `bin/update_refgenie.py` can still be run by hand against an existing download tree, and gains `--source` and `--manifest`.
+  - **Every genome has a sequence dictionary**, beside its FASTA under every alias, so `refgenie seek <genome>/fasta` is usable as a GATK or Picard reference directly. It is a fourth file in the `fasta` asset (`recipes/fasta.json`), and genomes already in a vault gain one on their next ingest. See *Sequence dictionary*.
+  - **Boolean and numeric parameters given on the command line are read correctly.** Nextflow passes them through as text, and Groovy treats the text `false` as true. This only became reachable with the new `--cleanup` and `--register` parameters, where `--cleanup false` would have switched cleanup on.
+  - **`provenance.json` records `release_requested`**, so a download directory can be matched to the request it answers.
   - **Tests.** `tests/` holds an offline suite covering the resolver, the ingest against real refgenie, and `main.nf` itself through a new `stub:` block. CI runs all of it and fails if any test is skipped.
 - **0.9.1**: Harm-reduction release. Behaviour changes - read before upgrading.
   - **Source data is no longer deleted by default.** Cleanup of the downloaded assembly directories is now opt-in via `run_pipeline.sh --cleanup`, and even then runs only after the FASTA (and the GTF, if annotation was requested) is verified into the vault. Previously it ran unconditionally, including after a partially-failed ingest.

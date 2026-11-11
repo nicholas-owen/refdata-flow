@@ -104,6 +104,58 @@ RECIPES_DIR = os.path.join(
     os.path.dirname(os.path.abspath(__file__)), os.pardir, "recipes"
 )
 
+# The genome itself is built with our own fasta recipe too: refgenie's, plus a
+# sequence dictionary. See recipes/fasta.json for why the dictionary belongs
+# inside this asset. refgenie keys its genome-initialising behaviour on the
+# recipe's NAME, which is still 'fasta', so supplying it from a file changes
+# nothing about how the digest is computed.
+FASTA_RECIPE = os.path.join(RECIPES_DIR, "fasta.json")
+
+
+def fasta_has_dictionary(config_file, vault_name):
+    """
+    Does this genome's fasta asset include a sequence dictionary?
+
+    True / False, or None when the genome or its fasta asset is not in the config.
+
+    A genome ingested before recipes/fasta.json existed has a fasta asset built by
+    refgenie's stock recipe, with no dictionary. `refgenie build` will not add one
+    on its own: the asset's completion flag is already there, so the build is
+    skipped whatever the recipe now says. The caller uses this to decide whether
+    to force the rebuild.
+
+    The answer comes from the FILE, not from the config's seek keys. A skipped
+    build still writes the new recipe's seek keys into the config, so after one the
+    config lists `dict` for an asset directory that holds no such file, and
+    `refgenie seek <genome>/fasta.dict` returns a path to nothing. Trusting the
+    seek key here would mean never repairing exactly the genomes that need it.
+    """
+    try:
+        with open(config_file, "r") as f:
+            config = yaml.safe_load(f) or {}
+    except (OSError, yaml.YAMLError):
+        return None
+    # refgenie records where the vault is; a config that has been moved by hand
+    # along with its vault may still carry the old location, so fall back to the
+    # directory the config is in, which is where this pipeline always puts it.
+    config_dir = os.path.dirname(os.path.abspath(config_file))
+    roots = [config.get("genome_folder") or config_dir, config_dir]
+    for digest, data in (config.get("genomes") or {}).items():
+        if vault_name in ((data or {}).get("aliases") or []):
+            fasta = (data.get("assets") or {}).get("fasta")
+            if not fasta:
+                return None
+            tag = fasta.get("default_tag") or "default"
+            seek_keys = ((fasta.get("tags") or {}).get(tag) or {}).get("seek_keys") or {}
+            filename = seek_keys.get("dict")
+            if not filename:
+                return False
+            return any(
+                os.path.isfile(os.path.join(root, "data", digest, "fasta", tag, filename))
+                for root in roots
+            )
+    return None
+
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -283,6 +335,117 @@ def vault_genome_name(assembly, provider):
 def parse_aliases(value):
     """'yeast; sacCer' -> ['yeast', 'sacCer']."""
     return [a.strip() for a in str(value or "").split(";") if a.strip()]
+
+
+# ---------------------------------------------------------------------------
+# Staged sources
+#
+# Run by hand, this script finds each download where main.nf publishes it, under
+# <outdir>/<provider>/<species>/[release-<n>/]<assembly>/. Run as the REGISTER
+# process it must not look there: Nextflow publishes in the background, so that
+# copy may be half-written - or absent, when --cleanup turns publishing off. The
+# process is handed each download as a staged input instead and names it here with
+# --source, keyed on what makes a download unique.
+# ---------------------------------------------------------------------------
+
+def source_key(provider, assembly, release):
+    """'ensembl/GRCh38.p14@116'; the release part is empty for an unpinned request."""
+    return f"{str(provider).strip().lower()}/{assembly}@{release or ''}"
+
+
+def parse_sources(values):
+    """['ensembl/GRCm39@=dir', ...] -> {'ensembl/GRCm39@': '/abs/dir', ...}."""
+    sources = {}
+    for value in values or []:
+        key, separator, path = value.partition("=")
+        if not separator or not key or not path:
+            raise ValueError(
+                f"--source expects PROVIDER/ASSEMBLY@[RELEASE]=DIR, got '{value}'"
+            )
+        if key in sources:
+            raise ValueError(f"--source names '{key}' twice")
+        sources[key] = os.path.abspath(path)
+    return sources
+
+
+def source_mismatch(source_dir, provider, assembly, release):
+    """
+    Why this directory is not the download for this request, or None.
+
+    A staged source is matched to its row by position in a list Nextflow builds, and
+    nothing about a directory called 'GRCm39' says whose GRCm39 it is. Ingesting the
+    wrong one files a genome under another's name - the failure this project keeps
+    closing off - so the directory's own provenance.json is checked against the row
+    before anything is built from it.
+
+    Only fields the file actually has are compared: a download made before a field
+    was recorded is accepted on the ones it does carry.
+    """
+    try:
+        with open(os.path.join(source_dir, "provenance.json")) as fh:
+            recorded = json.load(fh)
+    except (OSError, ValueError):
+        return None
+
+    expected = {
+        "assembly": assembly,
+        "provider": str(provider).strip().lower(),
+        "release_requested": release or "",
+    }
+    for field, want in expected.items():
+        if field not in recorded:
+            continue
+        got = str(recorded[field] or "").strip()
+        if field == "provider":
+            got = got.lower()
+        if got != want:
+            return (
+                f"the source directory '{source_dir}' records {field} "
+                f"'{got or '(none)'}', not '{want or '(none)'}' - it is not the "
+                "download for this request and has not been ingested"
+            )
+    return None
+
+
+MANIFEST_FIELDS = ["species", "assembly", "provider", "release", "vault_name", "digest"]
+
+
+def write_manifest(path, rows, config_file):
+    """
+    Write a TSV of the requested genomes that are in the vault, with their digests.
+
+    This is what a later stage needs to build something FROM a registered genome:
+    the name to `refgenie seek` and the digest that identifies the sequence. A row
+    that did not reach the vault is left out, so nothing downstream is started on
+    a genome that is not there.
+    """
+    with open(config_file, "r") as f:
+        config = yaml.safe_load(f) or {}
+    digest_of = {}
+    for digest, data in (config.get("genomes") or {}).items():
+        for alias in ((data or {}).get("aliases") or []):
+            digest_of[alias] = digest
+
+    with open(path, "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=MANIFEST_FIELDS, delimiter="\t")
+        writer.writeheader()
+        for row in rows:
+            assembly = (row.get("assembly") or "").strip()
+            provider = (row.get("provider") or "").strip()
+            try:
+                vault_name = vault_genome_name(assembly, provider)
+            except ValueError:
+                continue
+            if vault_name not in digest_of:
+                continue
+            writer.writerow({
+                "species": (row.get("species") or "").strip(),
+                "assembly": assembly,
+                "provider": provider,
+                "release": (row.get("release") or "").strip(),
+                "vault_name": vault_name,
+                "digest": digest_of[vault_name],
+            })
 
 
 def merge_aliases(vault_name, assembly, auto_names, requested_aliases,
@@ -502,9 +665,14 @@ def relink_aliases(config_file, assembly, logger):
 # Per-assembly processing
 # ---------------------------------------------------------------------------
 
-def process_assembly(row, outdir, config_file, refgenie_bin, do_cleanup, logger):
+def process_assembly(row, outdir, config_file, refgenie_bin, do_cleanup, logger,
+                     sources=None):
     """
     Register one resolved request into the refgenie vault.
+
+    `sources` maps source_key() to a staged download directory. A row found there
+    is ingested from that directory; any other row is looked for in the published
+    layout under outdir, as before.
 
     Returns a list of problem descriptions; an empty list means the row was fully
     ingested. Problems are collected rather than raised so one bad assembly does
@@ -540,11 +708,28 @@ def process_assembly(row, outdir, config_file, refgenie_bin, do_cleanup, logger)
     # step.
     release_parts = (f"release-{release_pin}",) if release_pin else ()
     try:
-        asm_dir = safe_path_under(outdir, provider, species, *release_parts, assembly)
+        layout_dir = safe_path_under(outdir, provider, species, *release_parts, assembly)
         vault_name = vault_genome_name(assembly, provider)
     except ValueError as e:
         logger.error("Skipping %s - %s", assembly, e)
         return [f"{assembly}: {e}"]
+
+    # Where to read the download from. layout_dir is where it is PUBLISHED, and is
+    # the only directory cleanup may ever remove; a staged source lives in
+    # Nextflow's work directory and is not this script's to delete.
+    staged_dir = (sources or {}).get(source_key(provider, assembly, release_pin))
+    asm_dir = staged_dir or layout_dir
+    if staged_dir:
+        # A source that was named must be usable. Falling through to "nothing to
+        # ingest" is right for a row that was cleaned up long ago, and wrong here.
+        mismatch = (
+            source_mismatch(staged_dir, provider, assembly, release_pin)
+            if os.path.isdir(staged_dir)
+            else f"the source directory '{staged_dir}' does not exist"
+        )
+        if mismatch:
+            logger.error("Skipping %s - %s", assembly, mismatch)
+            return [f"{assembly}: {mismatch}"]
 
     # Names offered as aliases without anyone asking for them by name. The first
     # genome to arrive keeps each; see merge_aliases.
@@ -575,6 +760,7 @@ def process_assembly(row, outdir, config_file, refgenie_bin, do_cleanup, logger)
                 sys.executable, refgenie_bin, "build",
                 f"{vault_name}/fasta",
                 "--files", f"fasta={fasta_path}",
+                "--recipe", os.path.abspath(FASTA_RECIPE),
                 "-c", config_file
             ]
             try:
@@ -583,6 +769,31 @@ def process_assembly(row, outdir, config_file, refgenie_bin, do_cleanup, logger)
             except subprocess.CalledProcessError as e:
                 logger.error("FASTA build failed for '%s': %s", assembly, e)
                 problems.append(f"{assembly}: FASTA build failed ({e})")
+
+            # A genome that was already in the vault was not rebuilt by the call
+            # above, so one ingested before the dictionary was part of the recipe
+            # still has none. Checked AFTER the build rather than before it,
+            # because only now is this genome sure to be findable by its vault
+            # name. -N (pypiper's new-start) reruns the whole recipe from the
+            # source FASTA, which is here; the sequence and its digest are the
+            # same, and the alias merge that follows restores the alias list.
+            if fasta_registered and fasta_has_dictionary(config_file, vault_name) is False:
+                logger.info(
+                    "'%s' is in the vault without a sequence dictionary (it was "
+                    "ingested before one was built). Rebuilding its fasta asset "
+                    "to add it.", vault_name
+                )
+                try:
+                    subprocess.run(cmd + ["-N"], check=True)
+                except subprocess.CalledProcessError as e:
+                    logger.error("FASTA rebuild failed for '%s': %s", assembly, e)
+                    problems.append(f"{assembly}: FASTA rebuild for the dictionary failed ({e})")
+                    fasta_registered = False
+                if fasta_registered and not fasta_has_dictionary(config_file, vault_name):
+                    logger.error(
+                        "'%s' still has no sequence dictionary after rebuilding", vault_name
+                    )
+                    problems.append(f"{assembly}: sequence dictionary was not built")
         else:
             logger.error("No FASTA found for '%s' in '%s'", assembly, asm_dir)
             problems.append(f"{assembly}: no FASTA found in '{asm_dir}'")
@@ -746,13 +957,18 @@ def process_assembly(row, outdir, config_file, refgenie_bin, do_cleanup, logger)
         else:
             preserve_provenance(asm_dir, outdir, provider, species, assembly, logger,
                                 release_parts)
-            logger.info("Cleaning up download directory: '%s'", asm_dir)
-            if not logged_rmtree(asm_dir, logger):
-                logger.warning(
-                    "Directory '%s' may require manual cleanup. See '%s' for full details.",
-                    asm_dir, os.path.join(outdir, "update_refgenie.log")
-                )
-                problems.append(f"{assembly}: cleanup did not complete cleanly")
+            # layout_dir, not asm_dir. They are the same directory when this script
+            # is run by hand. Under Nextflow asm_dir is a staged input, and the
+            # published copy exists only if an earlier run without --cleanup left
+            # one behind - which is exactly the copy --cleanup is asked to remove.
+            if os.path.exists(layout_dir):
+                logger.info("Cleaning up download directory: '%s'", layout_dir)
+                if not logged_rmtree(layout_dir, logger):
+                    logger.warning(
+                        "Directory '%s' may require manual cleanup. See '%s' for full "
+                        "details.", layout_dir, os.path.join(outdir, "update_refgenie.log")
+                    )
+                    problems.append(f"{assembly}: cleanup did not complete cleanly")
     else:
         # This is the normal path on a re-run after a previous --cleanup, but it is
         # also what a provider/species case mismatch looks like, because the download
@@ -763,6 +979,15 @@ def process_assembly(row, outdir, config_file, refgenie_bin, do_cleanup, logger)
             "not registered by an earlier run, check that the provider and species in the "
             "resolved CSV match the published directory layout.", asm_dir, assembly
         )
+        # The dictionary is built from the source FASTA, so with no source there is
+        # nothing to build it from. Say so: otherwise `refgenie seek <genome>/fasta.dict`
+        # fails later with no hint that the fix is a re-download.
+        if fasta_has_dictionary(config_file, vault_name) is False:
+            logger.warning(
+                "'%s' is in the vault without a sequence dictionary, and its download "
+                "is not here to build one from. It will be added the next time this "
+                "genome is ingested from a download.", vault_name
+            )
 
     # -----------------------------------------------------------
     # Alias fallback
@@ -799,10 +1024,26 @@ def main():
              "verified into the vault. Off by default: upstream providers archive old "
              "releases, so a deleted download may not be re-fetchable.",
     )
+    parser.add_argument(
+        "--source", action="append", default=[], metavar="PROVIDER/ASSEMBLY@[RELEASE]=DIR",
+        help="Ingest this request from DIR instead of the published layout under "
+             "outdir. Repeatable. Used by the REGISTER process in main.nf, which is "
+             "handed each download as a staged input.",
+    )
+    parser.add_argument(
+        "--manifest", metavar="TSV",
+        help="Write the requested genomes that are in the vault to this file, with "
+             "their vault names and digests.",
+    )
     args = parser.parse_args()
 
     resolved_csv = args.resolved_csv
     outdir       = args.outdir
+
+    try:
+        sources = parse_sources(args.source)
+    except ValueError as e:
+        parser.error(str(e))
 
     # Ensure outdir exists before we try to create the log file inside it
     os.makedirs(outdir, exist_ok=True)
@@ -812,6 +1053,14 @@ def main():
     refgenie_bin = os.path.join(os.path.dirname(sys.executable), "refgenie")
 
     logger.info("update_refgenie starting | outdir='%s' | cleanup=%s", outdir, args.cleanup)
+
+    # Every genome is built with this recipe, so without it nothing can be ingested.
+    # Checked once here: otherwise each row fails separately with refgenie's own,
+    # less direct, complaint about the path.
+    if not os.path.isfile(FASTA_RECIPE):
+        logger.error("The fasta recipe '%s' is missing; nothing can be ingested.",
+                     os.path.abspath(FASTA_RECIPE))
+        sys.exit(1)
 
     # Ensure refgenie config is initialized
     if not os.path.exists(config_file):
@@ -825,17 +1074,24 @@ def main():
     # through the batch no longer abandons the assemblies after it.
     all_problems = []
     processed = 0
+    rows = []
+    used_sources = set()
     try:
         with open(resolved_csv, "r", newline="") as f:
             reader = csv.DictReader(f)
             for lineno, row in enumerate(reader, start=2):
                 assembly = (row.get("assembly") or "").strip() or f"row {lineno}"
                 processed += 1
+                rows.append(row)
+                used_sources.add(source_key(
+                    row.get("provider") or "", (row.get("assembly") or "").strip(),
+                    (row.get("release") or "").strip()
+                ))
                 try:
                     all_problems.extend(
                         process_assembly(
                             row, outdir, config_file, refgenie_bin,
-                            args.cleanup, logger
+                            args.cleanup, logger, sources
                         )
                     )
                 except Exception as e:
@@ -844,6 +1100,22 @@ def main():
     except Exception as e:
         logger.error("Fatal error reading '%s': %s", resolved_csv, e)
         sys.exit(1)
+
+    # A source that matched no row was downloaded and then ignored. That is a
+    # disagreement between the workflow and the request file, not something to
+    # pass over: the genome it holds is not in the vault.
+    for key in sorted(set(sources) - used_sources):
+        logger.error("--source '%s' matches no row in '%s'", key, resolved_csv)
+        all_problems.append(f"source '{key}' matches no request and was not ingested")
+
+    # Written whether or not there were problems: it lists what IS in the vault,
+    # and the exit code below says whether that is everything that was asked for.
+    if args.manifest:
+        try:
+            write_manifest(args.manifest, rows, config_file)
+        except Exception as e:
+            logger.error("Could not write the manifest '%s': %s", args.manifest, e)
+            all_problems.append(f"manifest not written ({e})")
 
     # ----------------------------------------------------------------------
     # Report. A run that failed to register something the user asked for now exits
