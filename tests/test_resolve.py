@@ -46,13 +46,23 @@ SEARCH_RESULTS = {
 RESOLVED_HEADER = "species,assembly,provider,annotation,query,release,aliases\n"
 
 
+def rows_for(query, provider=None):
+    """What genomepy.search() yields for a query: one provider's rows, or everyone's."""
+    rows = SEARCH_RESULTS.get(query, [])
+    if provider:
+        rows = [row for row in rows if row[1].lower() == provider.lower()]
+    return rows
+
+
 class ResolverTestCase(unittest.TestCase):
     def setUp(self):
         self.searched = []
+        self.searched_providers = []
 
-        def fake_search(query, size=False):
+        def fake_search(query, provider=None, exact=False, size=False):
             self.searched.append(query)
-            return iter(SEARCH_RESULTS.get(query, []))
+            self.searched_providers.append(provider)
+            return iter(rows_for(query, provider))
 
         for target, attribute, replacement in (
             (resolve.genomepy, "search", fake_search),
@@ -189,9 +199,15 @@ class ProviderOffline(ResolverTestCase):
         # directly, so install it explicitly instead of relying on test order.
         resolve.configure_genomepy_logging(io.StringIO(), False)
 
-        def search_with_ensembl_down(query, size=False):
-            resolve.genomepy_logger.warning("Ensembl appears to be offline.")
-            return iter(row for row in SEARCH_RESULTS.get(query, []) if row[1] != "Ensembl")
+        def search_with_ensembl_down(query, provider=None, exact=False, size=False):
+            # As genomepy behaves: a warning while some provider still answers, and
+            # ConnectionError when none of the requested ones does - which, asked
+            # for Ensembl alone, is straight away.
+            if provider and provider.lower() == "ensembl":
+                raise ConnectionError("ensembl appears to be offline")
+            if not provider:
+                resolve.genomepy_logger.warning("Ensembl appears to be offline.")
+            return iter(row for row in rows_for(query, provider) if row[1] != "Ensembl")
 
         patcher = mock.patch.object(resolve.genomepy, "search", search_with_ensembl_down)
         patcher.start()
@@ -224,13 +240,59 @@ class ProviderOffline(ResolverTestCase):
         self.assertEqual(code, resolve.EXIT_UNRESOLVED)
         self.assertIn("among the providers that answered", err)
 
+    def test_outage_on_one_row_does_not_stop_the_rows_after_it(self):
+        # genomepy raises for the Ensembl row. Uncaught, that ended the whole run
+        # with exit 1 and the GENCODE row was never looked at.
+        code, rows, err = self.resolve([
+            "Homo_sapiens,GRCh38,ensembl,TRUE,human,",
+            "Mus_musculus,GRCm39,gencode,TRUE,mm_gc,",
+        ])
+        self.assertEqual(code, resolve.EXIT_UNRESOLVED)
+        self.assertEqual([r["provider"] for r in rows], ["GENCODE"])
+        self.assertIn("provider 'ensembl' is unreachable", err)
+
+    def test_every_provider_offline_is_reported_against_the_row(self):
+        def nothing_answers(query, provider=None, exact=False, size=False):
+            raise ConnectionError("Ensembl, UCSC, NCBI, GENCODE appears to be offline")
+
+        with mock.patch.object(resolve.genomepy, "search", nothing_answers):
+            code, rows, err = self.resolve(["Mus_musculus,GRCm39,,TRUE,mm,"])
+        self.assertEqual(code, resolve.EXIT_UNRESOLVED)
+        self.assertEqual(rows, [])
+        self.assertIn("could not be searched", err)
+
     def test_offline_state_does_not_leak_into_the_next_search(self):
         _, offline = resolve.search_assemblies("GRCm39")
         self.assertEqual(offline, {"ensembl"})
         with mock.patch.object(resolve.genomepy, "search",
-                               lambda query, size=False: iter(SEARCH_RESULTS[query])):
+                               lambda query, provider=None, size=False: iter(rows_for(query))):
             _, offline = resolve.search_assemblies("GRCm39")
         self.assertEqual(offline, set())
+
+
+class SearchScope(ResolverTestCase):
+    def test_row_naming_a_provider_searches_only_that_provider(self):
+        code, rows, err = self.resolve(["Homo_sapiens,GRCh38,Ensembl,TRUE,human,"])
+        self.assertEqual(code, 0, err)
+        self.assertEqual(self.searched_providers, ["ensembl"])
+
+    def test_row_naming_no_provider_searches_all_of_them(self):
+        code, rows, err = self.resolve(["Homo_sapiens,GRCh38,,TRUE,human,"])
+        self.assertEqual(code, 0, err)
+        self.assertEqual(self.searched_providers, [None])
+
+    def test_unknown_provider_is_refused_before_any_search(self):
+        # 'ensemble' used to search everything, match nothing, and be reported as
+        # "no matches found" - a typo in one column blamed on another.
+        code, rows, err = self.resolve([
+            "Homo_sapiens,GRCh38,ensemble,TRUE,human,",
+            "Mus_musculus,GRCm39,gencode,TRUE,mm_gc,",
+        ])
+        self.assertEqual(code, resolve.EXIT_UNRESOLVED)
+        self.assertIn("unknown provider 'ensemble'", err)
+        self.assertIn("ensembl", err)                      # the known names are listed
+        self.assertEqual(self.searched_providers, ["gencode"])
+        self.assertEqual([r["provider"] for r in rows], ["GENCODE"])
 
 
 class LogStyling(unittest.TestCase):

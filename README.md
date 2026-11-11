@@ -106,6 +106,8 @@ Mus_musculus,mouse,,true,mm39;mm,
 ```
 *(Note: If you leave `provider` empty like for Mouse, it will search all providers. You can also supply multiple custom aliases separated by semicolons in the `aliases` column.)*
 
+> **Name the provider when you know it.** A row with a provider searches only that provider, which takes seconds. A row without one searches all four, and NCBI's assembly summaries alone take several minutes to download. It also keeps the row independent of the others' availability: if the provider you named is unreachable the row fails saying so, and an outage anywhere else is not your problem. A provider name genomepy does not know (`ensemble`) is refused before anything is searched.
+
 > **`release` is optional, and only Ensembl can honour it.** Leave it empty to take whatever the provider currently publishes. Supplying it pins the download to that Ensembl release, and the request is checked before anything is fetched: the release must exist *and* must contain the assembly you asked for, so a typo or a release predating the assembly fails immediately with the valid alternatives listed.
 >
 > **It is rejected, not ignored, for other providers.** genomepy accepts a release for GENCODE, UCSC and NCBI and then silently downloads the current files anyway, which would record a version that was never used. A `release` on any provider but Ensembl therefore fails the row rather than running unpinned. UCSC cannot be pinned even in principle: it patches assemblies in place and builds annotations live from its MySQL server.

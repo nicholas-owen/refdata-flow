@@ -10,7 +10,7 @@ import tempfile
 from collections import namedtuple
 
 import genomepy
-from genomepy.providers import list_providers
+from genomepy.providers import PROVIDERS, list_providers
 # genomepy logs through loguru's single global logger. Importing it here gives
 # this script the same object, to restyle its output and to listen to it.
 from loguru import logger as genomepy_logger
@@ -265,9 +265,14 @@ def configure_genomepy_logging(stream=None, colorize=None):
     genomepy_logger.add(_note_offline, level="WARNING", format="{message}")
 
 
-def search_assemblies(query):
+def search_assemblies(query, provider=None):
     """
     Run a genomepy search. Returns (typed, shape-checked results, offline providers).
+
+    With `provider`, only that provider is searched. The resolver used to search
+    all of them for every row and discard the rest, so a request naming Ensembl
+    waited several minutes on NCBI's assembly summaries, and an outage at a
+    provider nobody had asked for still appeared in the output.
 
     The second value is the set of providers genomepy could not reach WHILE this
     search ran, taken from its own warnings. Asking afterwards is not the same
@@ -279,7 +284,17 @@ def search_assemblies(query):
     typo in a request that was correct.
     """
     _offline_during_search.clear()
-    rows = list(genomepy.search(query, size=False))
+    try:
+        rows = list(genomepy.search(query, provider=provider or None, size=False))
+    except ConnectionError:
+        # genomepy warns and carries on while at least one provider answers, and
+        # raises only when none does - which, with one provider named, is whenever
+        # that provider is down. Either way it is an outage to report against the
+        # row, not a reason to abandon every other row in the request.
+        rows = []
+        _offline_during_search.update(
+            [provider.lower()] if provider else [name.lower() for name in list_providers()]
+        )
     offline = set(_offline_during_search)
     if rows:
         _verify_row_shape(rows[0])
@@ -626,6 +641,20 @@ def main():
                     )
                     continue
 
+                # A provider genomepy has never heard of. This used to pass through
+                # unnoticed - every provider was searched, nothing matched the
+                # filter, and the row failed with "no matches found" - which hid a
+                # typo behind a message about the query. Now that the name is handed
+                # to genomepy, it would raise instead and end the whole run.
+                if provider_filter and provider_filter not in PROVIDERS:
+                    reason = (
+                        f"unknown provider '{provider_filter}' "
+                        f"(known: {', '.join(sorted(PROVIDERS))})"
+                    )
+                    print(f"ERROR: {reason}.", file=sys.stderr)
+                    unresolved.append((lineno, species, query, reason))
+                    continue
+
                 # Refuse an unpinnable combination before searching. Only possible
                 # here when the provider is stated in the request; when it is not,
                 # the same check runs again once the selection determines it.
@@ -679,9 +708,11 @@ def main():
                 # ------------------------------------------------------------------
                 print(f"\n--- Resolving query: '{query}' for {species} ---")
 
-                results, offline = search_assemblies(query)
+                results, offline = search_assemblies(query, provider_filter)
 
-                # Filter by provider if the user specified one
+                # The search was already limited to the named provider; this keeps
+                # the guarantee here, where the choice is made, rather than resting
+                # it on how genomepy treats the argument.
                 if provider_filter:
                     results = [r for r in results if r.provider.lower() == provider_filter]
 
