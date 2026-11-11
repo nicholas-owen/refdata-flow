@@ -4,12 +4,16 @@
 import argparse
 import csv
 import os
+import re
 import sys
 import tempfile
 from collections import namedtuple
 
 import genomepy
 from genomepy.providers import list_providers
+# genomepy logs through loguru's single global logger. Importing it here gives
+# this script the same object, to restyle its output and to listen to it.
+from loguru import logger as genomepy_logger
 
 # The resolved CSV carries `query` so the cache can tell *which request* produced
 # a given assembly. Without it the cache could only be keyed on species, which
@@ -214,9 +218,69 @@ def validate_release(provider_name, release, assembly):
         )
 
 
+# ---------------------------------------------------------------------------
+# genomepy's log output
+# ---------------------------------------------------------------------------
+
+# genomepy's own format, which colours the level name blue whatever the level:
+#   <green>{time}</green> | <blue>{level}</blue> | {message}
+# So "Ensembl appears to be offline" - the one line in a long search that changes
+# what the user should do next - looked exactly like the progress lines around it.
+# INFO keeps genomepy's styling; WARNING and above are red, level and message both.
+_LOG_PREFIX = "<green>{time:HH:mm:ss}</green> <bold>|</bold> "
+_LOG_INFO = _LOG_PREFIX + "<blue>{level}</blue> <bold>|</bold> {message}\n{exception}"
+_LOG_WARNING = (_LOG_PREFIX + "<red><bold>{level}</bold></red> <bold>|</bold> "
+                "<red>{message}</red>\n{exception}")
+
+# Providers genomepy reported as offline during the search now running. See
+# search_assemblies() for why this is recorded rather than checked afterwards.
+_OFFLINE_RE = re.compile(r"^(.+?) appears to be offline")
+_offline_during_search = set()
+
+
+def _log_format(record):
+    return _LOG_WARNING if record["level"].no >= 30 else _LOG_INFO
+
+
+def _note_offline(message):
+    """loguru sink: remember which providers genomepy says it could not reach."""
+    found = _OFFLINE_RE.match(message.record["message"])
+    if found:
+        for name in found.group(1).split(","):
+            _offline_during_search.add(name.strip().lower())
+
+
+def configure_genomepy_logging(stream=None, colorize=None):
+    """
+    Replace genomepy's log handler with one that makes warnings stand out, and add
+    a second that listens for providers going offline.
+
+    `colorize=None` leaves the decision to loguru, which colours a terminal and
+    writes plain text to a file or a pipe - so a log captured by a scheduler holds
+    no escape codes.
+    """
+    genomepy_logger.remove()
+    genomepy_logger.add(stream or sys.stderr, format=_log_format, level="INFO",
+                        colorize=colorize)
+    genomepy_logger.add(_note_offline, level="WARNING", format="{message}")
+
+
 def search_assemblies(query):
-    """Run a genomepy search and return typed, shape-checked results."""
+    """
+    Run a genomepy search. Returns (typed, shape-checked results, offline providers).
+
+    The second value is the set of providers genomepy could not reach WHILE this
+    search ran, taken from its own warnings. Asking afterwards is not the same
+    question. A search across all providers takes minutes - NCBI alone is several -
+    and a provider that was down at the start can be back by the end. Seen for
+    real: Ensembl was offline when the search reached it, so it contributed no
+    rows; five minutes later a ping succeeded, and the run reported "no matches
+    found for 'GRCh38' with provider 'ensembl'", sending the user to look for a
+    typo in a request that was correct.
+    """
+    _offline_during_search.clear()
     rows = list(genomepy.search(query, size=False))
+    offline = set(_offline_during_search)
     if rows:
         _verify_row_shape(rows[0])
     results = []
@@ -230,7 +294,7 @@ def search_assemblies(query):
             species=r[5] if len(r) > 5 else None,
             other=r[6] if len(r) > 6 else None,
         ))
-    return results
+    return results, offline
 
 
 # ---------------------------------------------------------------------------
@@ -532,6 +596,8 @@ def main():
     input_file = args.input_csv
     output_file = args.output_csv
 
+    configure_genomepy_logging()
+
     resolved_cache = load_cache(output_file)
     ledger = RequestLedger()
 
@@ -613,16 +679,37 @@ def main():
                 # ------------------------------------------------------------------
                 print(f"\n--- Resolving query: '{query}' for {species} ---")
 
-                results = search_assemblies(query)
+                results, offline = search_assemblies(query)
 
                 # Filter by provider if the user specified one
                 if provider_filter:
                     results = [r for r in results if r.provider.lower() == provider_filter]
 
+                # With no provider named, the candidates below come from whichever
+                # providers answered. Say when one did not: the list may be missing
+                # the very assembly that was wanted, and a single remaining match
+                # would otherwise be reported as "the exact match".
+                if offline and not provider_filter:
+                    warning = (
+                        f"WARNING: {', '.join(sorted(offline))} could not be searched "
+                        f"(offline), so the candidates for '{query}' may be incomplete."
+                    )
+                    # Red on a terminal, to match genomepy's warnings above it;
+                    # plain when stderr is a file or a pipe.
+                    if sys.stderr.isatty():
+                        warning = f"\033[31m{warning}\033[0m"
+                    print(warning, file=sys.stderr)
+
                 if not results:
                     # Distinguish "the provider is down" from "the query matched
                     # nothing" before reporting - the two need opposite responses.
-                    if provider_filter and provider_reachable(provider_filter) is False:
+                    # Offline DURING the search is the evidence that counts (see
+                    # search_assemblies); the ping covers a failure genomepy did not
+                    # announce.
+                    if provider_filter and (
+                        provider_filter in offline
+                        or provider_reachable(provider_filter) is False
+                    ):
                         reason = (
                             f"provider '{provider_filter}' is unreachable, so '{query}' "
                             "could not be resolved. This is usually transient; re-run "
@@ -632,6 +719,11 @@ def main():
                         reason = f"no matches found for '{query}'"
                         if provider_filter:
                             reason += f" with provider '{provider_filter}'"
+                        elif offline:
+                            reason += (
+                                f" among the providers that answered "
+                                f"({', '.join(sorted(offline))} could not be searched)"
+                            )
                     # Not reason.capitalize(): that would also lower-case the rest of
                     # the string, mangling assembly names like 'GRCh38' into 'grch38'.
                     print(f"ERROR: {reason}. Skipping.", file=sys.stderr)

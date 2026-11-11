@@ -177,6 +177,87 @@ class AnnotationGate(ResolverTestCase):
         self.assertEqual(rows[0]["aliases"], "yeast;sacCer")
 
 
+class ProviderOffline(ResolverTestCase):
+    """
+    genomepy does not fail when one provider is down: it logs a warning and
+    searches the rest, so the outage shows up only as rows that are not there.
+    """
+
+    def setUp(self):
+        super().setUp()
+        # main() installs the listener; one test here calls search_assemblies()
+        # directly, so install it explicitly instead of relying on test order.
+        resolve.configure_genomepy_logging(io.StringIO(), False)
+
+        def search_with_ensembl_down(query, size=False):
+            resolve.genomepy_logger.warning("Ensembl appears to be offline.")
+            return iter(row for row in SEARCH_RESULTS.get(query, []) if row[1] != "Ensembl")
+
+        patcher = mock.patch.object(resolve.genomepy, "search", search_with_ensembl_down)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_request_for_the_offline_provider_is_reported_as_unreachable(self):
+        # provider_reachable() answers True throughout this file: the provider is
+        # back by the time anyone asks. A search takes minutes, so that is the
+        # normal case, and it used to produce "no matches found" for a good request.
+        code, rows, err = self.resolve(["Homo_sapiens,GRCh38,ensembl,TRUE,human,"])
+        self.assertEqual(code, resolve.EXIT_UNRESOLVED)
+        self.assertEqual(rows, [])
+        self.assertIn("provider 'ensembl' is unreachable", err)
+        self.assertNotIn("no matches found", err)
+
+    def test_request_for_another_provider_is_unaffected(self):
+        code, rows, err = self.resolve(["Mus_musculus,GRCm39,gencode,TRUE,mm_gc,"])
+        self.assertEqual(code, 0, err)
+        self.assertEqual(rows[0]["provider"], "GENCODE")
+
+    def test_unfiltered_search_says_its_candidates_may_be_incomplete(self):
+        # One match is left, and it would otherwise be announced as the exact one.
+        code, rows, err = self.resolve(["Mus_musculus,GRCm39,,TRUE,mm,"])
+        self.assertEqual(code, 0, err)
+        self.assertEqual(rows[0]["provider"], "GENCODE")
+        self.assertIn("ensembl could not be searched", err)
+
+    def test_unfiltered_search_with_no_match_names_the_provider_it_missed(self):
+        code, rows, err = self.resolve(["Homo_sapiens,GRCh38,,TRUE,human,"])
+        self.assertEqual(code, resolve.EXIT_UNRESOLVED)
+        self.assertIn("among the providers that answered", err)
+
+    def test_offline_state_does_not_leak_into_the_next_search(self):
+        _, offline = resolve.search_assemblies("GRCm39")
+        self.assertEqual(offline, {"ensembl"})
+        with mock.patch.object(resolve.genomepy, "search",
+                               lambda query, size=False: iter(SEARCH_RESULTS[query])):
+            _, offline = resolve.search_assemblies("GRCm39")
+        self.assertEqual(offline, set())
+
+
+class LogStyling(unittest.TestCase):
+    RED = "\x1b[31m"
+
+    def lines(self, colorize):
+        stream = io.StringIO()
+        resolve.configure_genomepy_logging(stream=stream, colorize=colorize)
+        self.addCleanup(resolve.configure_genomepy_logging, io.StringIO(), False)
+        resolve.genomepy_logger.info("Downloading assembly summaries from UCSC")
+        resolve.genomepy_logger.warning("Ensembl appears to be offline.")
+        return stream.getvalue().splitlines()
+
+    def test_warning_is_red_and_progress_lines_are_not(self):
+        info, warning = self.lines(colorize=True)
+        self.assertIn(self.RED, warning)
+        self.assertNotIn(self.RED, info)
+        # Level and message both: the message is the part that says what happened.
+        self.assertGreaterEqual(warning.count(self.RED), 2)
+
+    def test_no_escape_codes_when_output_is_not_a_terminal(self):
+        info, warning = self.lines(colorize=False)
+        self.assertNotIn("\x1b", info + warning)
+        self.assertTrue(warning.endswith("| WARNING | Ensembl appears to be offline."), warning)
+        self.assertTrue(info.endswith("| INFO | Downloading assembly summaries from UCSC"), info)
+
+
 class OlderRequestFiles(ResolverTestCase):
     def test_request_without_aliases_or_release_columns_resolves(self):
         code, rows, err = self.resolve(["Saccharomyces_cerevisiae,sacCer3,ucsc,false"],
