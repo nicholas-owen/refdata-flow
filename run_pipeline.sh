@@ -258,10 +258,19 @@ BGZIP_EOF
 
 chmod +x "$VENV_DIR/bin/samtools" "$VENV_DIR/bin/bgzip"
 
-# Put the venv bin on PATH so refgenie's `samtools faidx` subprocess (and any
-# genomepy `bgzip` call) resolves to the shims above.
+# The absolute path of the venv's bin, handed to Nextflow as --venv_bin so the
+# REGISTER process can put it on its own PATH: that is where refgenie and the
+# shims above are.
+#
+# It is deliberately NOT exported onto PATH here, as it used to be. Everything this
+# script runs from the venv is called by its full path, and an export reaches the
+# download tasks too. There it shadowed the conda environment they are given:
+# with conda's (base) active in the launching shell, `conda activate` puts the
+# task's environment where base was, not at the front, so `.venv/bin` stayed ahead
+# of it. Seen on a real run - download.py ran under the venv's Python, and each
+# FASTA was compressed by the pysam stand-in for bgzip rather than the real one,
+# with the conda environment supplying only the UCSC tools.
 VENV_BIN="$(cd "$VENV_DIR/bin" && pwd)"
-export PATH="$VENV_BIN:$PATH"
 
 if [ ! -f "$RAW_CSV" ]; then
     # First run: seed the request file from the tracked template, then stop. Copying
