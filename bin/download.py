@@ -188,8 +188,22 @@ def derive_annotation_release(assembly_dir, provider, tag):
     match = README_ANNOTATION_RE.search(text)
     if not match:
         return None, None
-    source = match.group(1).strip()
+    return release_from_source(match.group(1).strip(), provider, tag)
 
+
+def release_from_source(source, provider, tag):
+    """
+    The release an annotation source denotes, as (value, kind), or (None, None).
+
+    `source` is what genomepy records as the 'annotation url': a download URL, or
+    for UCSC "UCSC MySQL database: <db>, table: <table>".
+
+    Split out from derive_annotation_release() so the same rules can be applied
+    BEFORE a download, to a source genomepy has only been asked about.
+    bin/preflight.py does that to decide whether the vault already holds the
+    release a provider is currently publishing. One implementation, so the tag the
+    preflight looks for is by construction the tag the ingest will have written.
+    """
     name = str(provider).strip().lower()
 
     if name == "ensembl":

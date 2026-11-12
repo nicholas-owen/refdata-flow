@@ -85,7 +85,10 @@ class NextflowTestCase(unittest.TestCase):
         # pipeline's own environment when the suite is run as the README says.
         command = ["nextflow", "run", MAIN_NF, "-profile", "standard", "-ansi-log", "false",
                    "--input", requests, "--outdir", outdir]
-        command += ["--venv_bin", venv_bin] if register else ["--register", "false"]
+        # --check_releases false: the preflight would otherwise ask Ensembl what its
+        # current release is, for an assembly that exists only in these tests.
+        command += (["--venv_bin", venv_bin, "--check_releases", "false"] if register
+                    else ["--register", "false"])
         command += extra
         if stub:
             command.append("-stub")
@@ -222,15 +225,53 @@ class Registration(NextflowTestCase):
         self.assertTrue(os.path.isfile(
             self.published("GENCODE", "Mus_musculus", "toyAsm", "toyAsm.fa.gz")))
 
-    def test_05_resumed_run_registers_again_and_changes_nothing(self):
+    def test_05_second_run_downloads_nothing_and_changes_nothing(self):
+        # No -resume: Nextflow's cache is not what prevents the downloads. The
+        # preflight finds all four requests in the vault, so FETCH_GENOME is never
+        # even created - which is the behaviour an HPC run without work/ needs.
         before = {alias: sorted(genome["assets"]) for alias, genome in load_vault(self.outdir).items()}
-        result = self.nextflow(self.requests, self.outdir, "-resume", register=True)
+        result = self.nextflow(self.requests, self.outdir, register=True)
         self.assertEqual(result.returncode, 0, result.stdout[-3000:])
-        self.assertIn("Cached process > FETCH_GENOME", result.stdout)
-        # REGISTER is never cached: the vault may have changed outside the workflow.
-        self.assertIn("Submitted process > REGISTER", result.stdout)
+        self.assertNotIn("FETCH_GENOME", result.stdout)
+        self.assertEqual(result.stdout.count("  SKIP "), 4)
+        self.assertIn("0 to download, 4 already in the vault", result.stdout)
+        # REGISTER still runs, with nothing staged: aliases may have been added.
+        self.assertIn("Submitted process > REGISTER (0 downloaded)", result.stdout)
         after = {alias: sorted(genome["assets"]) for alias, genome in load_vault(self.outdir).items()}
         self.assertEqual(before, after)
+
+    def test_05b_preflight_off_downloads_everything_again(self):
+        # All four tasks run, where the test above had none - although every one
+        # of these genomes is in the vault.
+        result = self.nextflow(self.requests, self.outdir, "--preflight", "false", register=True)
+        self.assertEqual(result.returncode, 0, result.stdout[-3000:])
+        self.assertNotIn("PREFLIGHT", result.stdout)
+        self.assertEqual(result.stdout.count("Submitted process > FETCH_GENOME"), 4)
+        self.assertIn("Submitted process > REGISTER (4 downloaded)", result.stdout)
+
+    def test_05c_only_the_new_request_is_downloaded_and_new_aliases_still_apply(self):
+        outdir = os.path.join(self.work, "grow.out")
+        first = self.write_requests("grow1.csv", HEADER
+                                    + "Mus_musculus,toyAsm,Ensembl,TRUE,toyAsm,,mouse_ens\n"
+                                    + "Foo_bar,seqOnly,NCBI,false,seqOnly,,\n")
+        self.assertEqual(self.nextflow(first, outdir, register=True).returncode, 0)
+
+        # Same two genomes, one of them with an extra alias, plus two new requests:
+        # an older release of a genome that is there, and a genome that is not.
+        second = self.write_requests("grow2.csv", HEADER
+                                     + "Mus_musculus,toyAsm,Ensembl,TRUE,toyAsm,,mouse_ens;added_later\n"
+                                     + "Foo_bar,seqOnly,NCBI,false,seqOnly,,\n"
+                                     + "Mus_musculus,toyAsm,Ensembl,TRUE,toyAsm,110,mouse_ens\n"
+                                     + "Mus_musculus,toyAsm,GENCODE,TRUE,toyAsm,,mouse_gc\n")
+        result = self.nextflow(second, outdir, register=True)
+        self.assertEqual(result.returncode, 0, result.stdout[-3000:])
+        self.assertEqual(result.stdout.count("Submitted process > FETCH_GENOME"), 2)
+        self.assertIn("2 to download, 2 already in the vault", result.stdout)
+
+        vault = self.assert_vault_complete(outdir)
+        # Applied although nothing was downloaded for that row - and not lost when
+        # the pinned row, which shares its genome, was ingested after it.
+        self.assertIn("added_later", vault["toyAsm_ensembl"]["aliases"])
 
     def test_06_cleanup_false_on_the_command_line_still_keeps_sources(self):
         # A command-line value arrives as text, and the text 'false' is true to

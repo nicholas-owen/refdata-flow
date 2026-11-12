@@ -234,6 +234,72 @@ class ToyVault(unittest.TestCase):
 
 
 @unittest.skipIf(missing_requirement(), missing_requirement())
+class AliasRetention(unittest.TestCase):
+    """
+    An alias, once granted, stays.
+
+    `refgenie build <name>/fasta` resets a genome's alias list to <name> alone
+    every time it is called, built or skipped. So each ingest used to leave a
+    genome with only the aliases of the request that ingested it last.
+    """
+
+    HEADER = "species,assembly,provider,annotation,query,release,aliases\n"
+
+    def setUp(self):
+        self.work = tempfile.mkdtemp(prefix="refdata-flow-test-")
+        self.addCleanup(shutil.rmtree, self.work, ignore_errors=True)
+        self.outdir = os.path.join(self.work, "out")
+        self.config_file = os.path.join(self.outdir, "refgenie_export.yaml")
+        fake_download(os.path.join(self.outdir, "Ensembl", "Mus_musculus", "toyAsm"),
+                      "", "116", "ensembl_release")
+        fake_download(os.path.join(self.outdir, "Ensembl", "Mus_musculus", "release-110", "toyAsm"),
+                      "", "110", "ensembl_release")
+
+    def ingest(self, rows):
+        resolved = os.path.join(self.work, "requests_resolved.csv")
+        with open(resolved, "w", newline="") as f:
+            f.write(self.HEADER + rows)
+        result = subprocess.run(
+            [sys.executable, INGEST, resolved, self.outdir],
+            cwd=self.work, env=ENV, text=True,
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout[-3000:])
+        with open(self.config_file) as f:
+            genomes = yaml.safe_load(f)["genomes"]
+        self.assertEqual(len(genomes), 1)
+        return set(next(iter(genomes.values()))["aliases"])
+
+    def seek(self, registry_path):
+        result = subprocess.run(
+            [sys.executable, REFGENIE, "seek", "-c", self.config_file, registry_path],
+            cwd=self.work, env=ENV, text=True, capture_output=True,
+        )
+        return result.returncode, result.stdout.strip().splitlines()[-1:]
+
+    def test_alias_from_an_earlier_request_survives_a_later_one(self):
+        self.ingest("Mus_musculus,toyAsm,Ensembl,TRUE,toyAsm,,first_name\n")
+        aliases = self.ingest("Mus_musculus,toyAsm,Ensembl,TRUE,toyAsm,,second_name\n")
+        self.assertTrue({"first_name", "second_name", "toyAsm", "toyAsm_ensembl"} <= aliases)
+        # Still usable, not merely listed.
+        code, path = self.seek("first_name/fasta")
+        self.assertEqual(code, 0)
+        self.assertTrue(os.path.isfile(path[0]))
+
+    def test_request_with_no_aliases_removes_none(self):
+        self.ingest("Mus_musculus,toyAsm,Ensembl,TRUE,toyAsm,,first_name\n")
+        aliases = self.ingest("Mus_musculus,toyAsm,Ensembl,TRUE,toyAsm,,\n")
+        self.assertIn("first_name", aliases)
+
+    def test_two_rows_for_one_genome_keep_both_rows_aliases(self):
+        # Two releases of one assembly are one genome. The second row's build
+        # used to wipe the alias the first row had just been given.
+        aliases = self.ingest("Mus_musculus,toyAsm,Ensembl,TRUE,toyAsm,,current_name\n"
+                              "Mus_musculus,toyAsm,Ensembl,TRUE,toyAsm,110,older_name\n")
+        self.assertTrue({"current_name", "older_name"} <= aliases)
+
+
+@unittest.skipIf(missing_requirement(), missing_requirement())
 class OlderVault(unittest.TestCase):
     """
     A vault as earlier versions built it, met by the current ingest.

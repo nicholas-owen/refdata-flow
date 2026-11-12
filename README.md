@@ -132,7 +132,7 @@ bash run_pipeline.sh requests/requests_raw.csv --outdir /path/to/your/custom/sto
 
 This script will automatically:
 1. **Resolve**: Parse your `requests/requests_raw.csv`. It connects to the databases and interactively prompts you if there are multiple matches for your generic queries.
-2. **Download**: Automatically launch the Nextflow pipeline on the resolved targets using Conda. It always passes `-resume`, so genomes that completed in a previous run are skipped (see [Resuming an Interrupted Run](#-pro-tip-resuming-an-interrupted-run) for the limits).
+2. **Download**: Automatically launch the Nextflow pipeline on the resolved targets using Conda. It first asks the vault which requests it already holds, and downloads only the rest (see [Genomes already in the vault](#-genomes-already-in-the-vault-are-not-downloaded-again)).
 3. **refgenie catalogue**: Finally, in the same Nextflow run, it automatically initializes a `refgenie_export.yaml` for you (if one doesn't exist yet), computes the sequence digests, and links your aliases. The downloaded source directories are **kept** unless you pass `--cleanup` (see below).
 
 > **Cataloguing is part of the Nextflow run.** It used to be a separate step the wrapper ran after Nextflow returned. It is now the `REGISTER` process, with three properties worth knowing:
@@ -185,15 +185,47 @@ Output from genomes running in parallel is interleaved, with each line tagged by
 tail -f work/de/f44c46*/.command.log
 ```
 
+### 🧭 Genomes already in the vault are not downloaded again
+
+Every run starts with a preflight: it reads the vault and lists each request as `SKIP` or `FETCH`, with the reason.
+
+```text
+Preflight: checking 3 request(s) against the vault at /shared/reference_datasets
+  SKIP   GRCh38.p14 from Ensembl, release 116: genome and ensembl_gtf:116 are in the vault
+  SKIP   sacCer3 from UCSC: genome and ucsc_gtf:20210210 are in the vault, and 20210210 is current
+  FETCH  GRCm39 from Ensembl: Ensembl now publishes ensembl_gtf release 117; the vault has 116
+Preflight: 1 to download, 2 already in the vault.
+```
+
+This is what makes re-running cheap, and it does not depend on Nextflow's `work/` directory. You can run `--clean`, lose `work/`, or run on an HPC that never keeps it, and a finished genome is still not fetched twice: the vault itself is the record.
+
+A request is skipped when the vault really holds what it asks for:
+
+- **The genome**, with its sequence dictionary on disk.
+- **The annotation, at the right release**, if you asked for one. For a pinned request that is the pinned release. For an unpinned request it is the release the provider publishes today.
+
+So an unpinned row follows the provider. When Ensembl moves from 116 to 117, the next run fetches that row again and the vault gains a `117` tag beside `116`. Pin the release if you do not want that.
+
+Three things to know:
+
+- **Unreachable providers never cause a refetch.** If the current release cannot be checked and the vault holds some release of the annotation, the row is skipped and the report says so.
+- **To check nothing online**, run Nextflow with `--check_releases false`. Any release already in the vault then satisfies an unpinned row.
+- **To download everything again regardless**, pass `--refetch`:
+  ```bash
+  bash run_pipeline.sh requests/requests_raw.csv --refetch
+  ```
+
+Rows that are skipped still have their aliases applied, so adding an alias to a genome you already hold takes seconds.
+
 ### 🔁 Pro-Tip: Resuming an Interrupted Run
-You do **not** need to pass a resume flag - `run_pipeline.sh` always launches Nextflow with `-resume`, so simply re-running the pipeline continues where the previous run left off:
+The preflight above covers genomes that are *in the vault*. Nextflow's resume cache covers the gap before that: a download that completed but had not been registered when the run stopped. `run_pipeline.sh` always launches Nextflow with `-resume`, so simply re-running continues where the previous run left off:
 ```bash
 bash run_pipeline.sh requests/requests_raw.csv        # automatically resumes the previous session
 ```
 A couple of things to be aware of:
 
 - Resume works at the **per-genome** level: it skips genomes whose download *completed successfully* in a prior run. A genome that was still downloading when you interrupted it did not complete, so it restarts from the beginning (there is no partial/byte-level resume). Re-running is safe: finished genomes are skipped, only unfinished ones re-run.
-- Resume relies on the `work/` and `.nextflow/` directories. Running `bash run_pipeline.sh --clean` (or deleting those directories) **erases the resume cache**, so the next run re-downloads everything. Only `--clean` once you're finished.
+- Resume relies on the `work/` and `.nextflow/` directories. Running `bash run_pipeline.sh --clean` (or deleting those directories) **erases the resume cache**. Genomes already in the vault are unaffected, because the preflight skips them; what is lost is any download that had finished but was not yet registered.
 - On a resumed run, skipped genomes are shown as `cached` in the Nextflow output, e.g. `… FETCH_GENOME (…) [100%] 1 of 1, cached: 1 ✔`.
 
 ### 🔂 Failed downloads are retried
@@ -415,6 +447,8 @@ Two operational notes:
   - **Failed downloads are retried**, twice by default, with at most four downloads running at once. Previously the first failure ended the run and killed every other download in progress. See *Failed downloads are retried*.
   - **Cataloguing moved into Nextflow.** The wrapper's third step is now the `REGISTER` process, which starts when every download has finished and reads each one as a task input instead of from the copy published under `--outdir`. `--cleanup` therefore no longer publishes sources and then deletes them; it does not publish them. `bin/update_refgenie.py` can still be run by hand against an existing download tree, and gains `--source` and `--manifest`.
   - **Every genome has a sequence dictionary**, beside its FASTA under every alias, so `refgenie seek <genome>/fasta` is usable as a GATK or Picard reference directly. It is a fourth file in the `fasta` asset (`recipes/fasta.json`), and genomes already in a vault gain one on their next ingest. See *Sequence dictionary*.
+  - **A preflight asks the vault before downloading.** Requests the vault already satisfies are skipped, so re-runs no longer depend on Nextflow's `work/` cache surviving. An unpinned annotation is fetched again when the provider publishes a newer release, and gains a tag. `--refetch` downloads everything regardless. See *Genomes already in the vault are not downloaded again*.
+  - **An alias, once granted, stays.** Re-ingesting a genome used to leave it with only the aliases of the request that ingested it last: `refgenie build` resets a genome's alias list on every call. An alias given by an earlier request file vanished from the config, with its links still on disk. The ingest now records the list before each build and restores it.
   - **Download tasks use the conda environment's own tools.** The wrapper used to put its virtual environment at the front of `PATH` before launching Nextflow, which left it ahead of the conda environment inside every task: downloads ran under the venv's Python and compressed each FASTA with the pysam stand-in for `bgzip`. The wrapper no longer exports it; only the `REGISTER` step uses the venv.
   - **Boolean and numeric parameters given on the command line are read correctly.** Nextflow passes them through as text, and Groovy treats the text `false` as true. This only became reachable with the new `--cleanup` and `--register` parameters, where `--cleanup false` would have switched cleanup on.
   - **`provenance.json` records `release_requested`**, so a download directory can be matched to the request it answers.

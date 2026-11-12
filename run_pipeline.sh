@@ -32,8 +32,9 @@ DRY_RUN=0
 DEBUG=0
 CLEANUP=0
 NONINTERACTIVE=0
+REFETCH=0
 
-USAGE="Usage: bash run_pipeline.sh [requests.csv] [--outdir /path/to/save] [--cleanup] [--non-interactive] [--clean] [--dry-run] [--debug] [--version]"
+USAGE="Usage: bash run_pipeline.sh [requests.csv] [--outdir /path/to/save] [--cleanup] [--refetch] [--non-interactive] [--clean] [--dry-run] [--debug] [--version]"
 
 # Parse command line arguments
 while [[ "$#" -gt 0 ]]; do
@@ -63,6 +64,12 @@ while [[ "$#" -gt 0 ]]; do
             # into the refgenie vault. Opt-in: upstream providers archive old releases,
             # so a deleted download is not guaranteed to be re-fetchable.
             CLEANUP=1
+            ;;
+        --refetch)
+            # Download every request again, including genomes the vault already
+            # holds. By default the vault is asked first and only what it lacks is
+            # fetched; this is for the case where a copy in the vault is suspect.
+            REFETCH=1
             ;;
         --clean)
             echo "Cleaning up Nextflow cache, logs, and work directories..."
@@ -372,11 +379,18 @@ if [ "$CLEANUP" -eq 1 ]; then
     echo "[Step 2] --cleanup: downloaded sources will not be kept once they are in the vault."
     NF_ARGS+=(--cleanup true)
 fi
+if [ "$REFETCH" -eq 1 ]; then
+    echo "[Step 2] --refetch: every request will be downloaded, whatever the vault holds."
+    NF_ARGS+=(--preflight false)
+fi
 if [ "$DEBUG" -eq 1 ]; then
     echo "[Step 2] Debug mode: streaming per-task progress."
     NF_ARGS+=(--debug true -ansi-log false)
 fi
-# The -resume flag ensures we don't redownload existing datasets
+# What keeps a finished genome from being downloaded again is the preflight, which
+# asks the vault. -resume is a second, weaker line: it covers a download that
+# completed but was not yet registered when a run stopped, for as long as work/
+# still exists.
 nextflow run main.nf "${NF_ARGS[@]}"
 
 echo ""

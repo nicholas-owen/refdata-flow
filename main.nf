@@ -211,6 +211,48 @@ process FETCH_GENOME {
     """
 }
 
+// Ask the vault which requests it already satisfies, so only the rest are fetched.
+//
+// Until this existed the only thing that kept a finished genome from being
+// downloaded again was the resume cache in work/ - which `--clean` deletes and an
+// HPC does not keep. The vault's config is kept, and already records what has been
+// built, so it is consulted first. bin/preflight.py has the rules; the short
+// version is that a genome is skipped when it and the requested annotation release
+// are really there, and fetched whenever that is in doubt.
+//
+// Emits the keys of the requests to download, one per line, in the same format
+// REGISTER uses to name its sources.
+//
+// `ready` is not used by the script. It is the number of rows that passed the
+// checks in the workflow block, and taking it as an input is what makes this task
+// wait for those checks: without it the preflight could start reading a request
+// file that is about to be rejected.
+//
+// Like REGISTER it runs on the launching machine with the wrapper's Python
+// environment, is never cached (the vault can change between runs), and has no
+// stub block, so `-stub` runs it for real. Its report is always shown: which
+// genomes a run is about to skip is not debugging detail.
+process PREFLIGHT {
+    tag "${ready} request(s)"
+    cache false
+    debug true
+
+    input:
+    path resolved_csv
+    val vault
+    val ready
+
+    output:
+    path 'fetch_keys.txt', emit: keys
+
+    script:
+    def release_flag = isTrue(params.check_releases) ? '' : '--no-release-check'
+    """
+    export PATH="${params.venv_bin}:\$PATH"
+    preflight.py "${resolved_csv}" "${vault}" --fetch-keys fetch_keys.txt ${release_flag}
+    """
+}
+
 // Catalogue every download in the refgenie vault at params.outdir.
 //
 // ONE task for the whole request list, not one per genome, and that is deliberate:
@@ -239,7 +281,7 @@ process FETCH_GENOME {
 // There is no stub block, so `nextflow run -stub` runs this for real against the
 // stubbed downloads - which is how tests/test_nextflow_stub.py exercises it.
 process REGISTER {
-    tag "${keys.size()} genome(s)"
+    tag "${keys.size()} downloaded"
     maxForks 1
     cache false
     debug(params.debug.toString().toLowerCase() == 'true')
@@ -328,24 +370,56 @@ workflow {
         // sits in its own map, not in the flatMap - see rejectDuplicates.
         .toList()
         .map { rows -> rejectDuplicates(rows) }
-        .flatMap { rows -> rows }
-        .set { requests_ch }
+        .set { checked_ch }
 
-    FETCH_GENOME(requests_ch)
+    checked_ch.flatMap { rows -> rows }.set { requests_ch }
+
+    // Which of the requests to download. With the preflight on, only those the
+    // vault does not already satisfy; otherwise all of them. The preflight needs
+    // the vault, so it is skipped along with registration.
+    //
+    // The key built here must match source_key() in bin/update_refgenie.py, which
+    // is what the preflight writes; keep the two in step.
+    if( do_register && isTrue(params.preflight) ) {
+        PREFLIGHT(file(params.input, checkIfExists: true), vault,
+                  checked_ch.map { rows -> rows.size() })
+
+        // Wrapped in a list so `combine` appends the whole set of keys as ONE
+        // element; unwrapped, it would spread them across the tuple.
+        PREFLIGHT.out.keys
+            .map { keys_file -> [ keys_file.readLines().findAll { line -> line } ] }
+            .set { wanted_ch }
+
+        requests_ch
+            .combine(wanted_ch)
+            .filter { _species, assembly, provider, _annotation, release, wanted ->
+                wanted.contains("${provider.toLowerCase()}/${assembly}@${release}".toString())
+            }
+            .map { species, assembly, provider, annotation, release, _wanted ->
+                tuple(species, assembly, provider, annotation, release)
+            }
+            .set { fetch_ch }
+    }
+    else {
+        requests_ch.set { fetch_ch }
+    }
+
+    FETCH_GENOME(fetch_ch)
 
     if( do_register ) {
         // One (keys, directories) pair for the whole run, so REGISTER is a single
         // task that starts only when every download has finished. The key format
         // is source_key() in bin/update_refgenie.py; keep the two in step.
         //
-        // The filter drops the empty case - a request file with a header and no
-        // rows - where there is nothing to stage and nothing to register.
+        // An empty pair is passed on, not filtered out. When the preflight finds
+        // every request already in the vault nothing is downloaded, and REGISTER
+        // must still run: it is what applies an alias added to the request since
+        // the genome was built, and what removes kept sources under --cleanup.
         FETCH_GENOME.out
             .map { provider, assembly, release, dir ->
                 tuple("${provider.toLowerCase()}/${assembly}@${release}".toString(), dir)
             }
             .toList()
-            .filter { pairs -> pairs.size() > 0 }
             .map { pairs -> tuple(pairs.collect { pair -> pair[0] }, pairs.collect { pair -> pair[1] }) }
             .set { downloads_ch }
 

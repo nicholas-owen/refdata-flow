@@ -448,8 +448,36 @@ def write_manifest(path, rows, config_file):
             })
 
 
+def snapshot_aliases(config_file):
+    """
+    Every genome's alias list as it stands now: {digest: [aliases]}.
+
+    Taken before a FASTA build, because the build destroys it. `refgenie build
+    <name>/fasta` ends by setting the genome's aliases to <name> ALONE - even when
+    the asset already exists and nothing is rebuilt. Reproduced against refgenie
+    0.13.0: a genome ingested with the alias 'first_name', then ingested again by
+    a request that asked for 'second_name', was left with only the second. The
+    first was gone from the config, its symlink tree still on disk, and
+    `refgenie seek first_name/fasta` failed. Nothing reported it.
+
+    merge_aliases() puts back whatever this recorded for the genome it is working
+    on, so an alias, once granted, stays until someone removes it on purpose.
+    Keyed by digest, not by name, because the name a row builds under may be new
+    to a genome that has been in the vault for a long time.
+    """
+    try:
+        with open(config_file, "r") as f:
+            config = yaml.safe_load(f) or {}
+    except (OSError, yaml.YAMLError):
+        return {}
+    return {
+        digest: list((data or {}).get("aliases") or [])
+        for digest, data in (config.get("genomes") or {}).items()
+    }
+
+
 def merge_aliases(vault_name, assembly, auto_names, requested_aliases,
-                  config_file, logger):
+                  config_file, logger, aliases_before=None):
     """
     Merge this request's aliases into the digest's alias list in the refgenie config.
 
@@ -533,8 +561,17 @@ def merge_aliases(vault_name, assembly, auto_names, requested_aliases,
                 ", ".join(f"'{c}'" for c in unavailable), vault_name
             )
 
+        # What this genome held before the build that has just reset its list (see
+        # snapshot_aliases). They were this digest's a moment ago and nothing else
+        # has run since, so none can have been taken by another genome; the check
+        # is there for the case that someone edits the config between the two.
+        restored = {
+            a for a in (aliases_before or {}).get(target_digest, []) if not taken(a)
+        }
+
         aliases_to_set = (
-            {vault_name} | (requested - set(refused)) | (derived - set(unavailable))
+            {vault_name} | restored
+            | (requested - set(refused)) | (derived - set(unavailable))
         )
 
         entry = config["genomes"][target_digest]
@@ -746,6 +783,8 @@ def process_assembly(row, outdir, config_file, refgenie_bin, do_cleanup, logger,
     # whether that happened so the fallback at the end does not repeat it.
     aliases_merged = False
     fasta_path = None
+    # Filled in just before the FASTA build; see snapshot_aliases.
+    aliases_before = None
 
     if os.path.exists(asm_dir):
         # Find and register FASTA
@@ -755,6 +794,8 @@ def process_assembly(row, outdir, config_file, refgenie_bin, do_cleanup, logger,
         )
         if fasta_files:
             fasta_path = os.path.abspath(fasta_files[0])
+            # Before the build, which resets this genome's alias list.
+            aliases_before = snapshot_aliases(config_file)
             logger.info("Building FASTA digest in refgenie for '%s'", vault_name)
             cmd = [
                 sys.executable, refgenie_bin, "build",
@@ -808,7 +849,7 @@ def process_assembly(row, outdir, config_file, refgenie_bin, do_cleanup, logger,
         if fasta_registered:
             problems.extend(merge_aliases(
                 vault_name, assembly, auto_names, requested_aliases,
-                config_file, logger
+                config_file, logger, aliases_before
             ))
             aliases_merged = True
 
@@ -974,11 +1015,22 @@ def process_assembly(row, outdir, config_file, refgenie_bin, do_cleanup, logger,
         # also what a provider/species case mismatch looks like, because the download
         # and ingest stages construct this path independently. The message no longer
         # asserts that the genome is present.
-        logger.info(
-            "Directory '%s' not found - nothing to ingest for '%s'. If this assembly was "
-            "not registered by an earlier run, check that the provider and species in the "
-            "resolved CSV match the published directory layout.", asm_dir, assembly
-        )
+        # A genome the vault already holds is the ordinary case since the preflight:
+        # nothing was downloaded for it because nothing needed to be. Say that, and
+        # keep the longer hint for the case where the genome is NOT there, which is
+        # the one that needs explaining.
+        if fasta_has_dictionary(config_file, vault_name):
+            logger.info(
+                "'%s' is already in the vault and no download was supplied for it; "
+                "checking its aliases only.", vault_name
+            )
+        else:
+            logger.info(
+                "Directory '%s' not found - nothing to ingest for '%s'. If this assembly "
+                "was not registered by an earlier run, check that the provider and "
+                "species in the resolved CSV match the published directory layout.",
+                asm_dir, assembly
+            )
         # The dictionary is built from the source FASTA, so with no source there is
         # nothing to build it from. Say so: otherwise `refgenie seek <genome>/fasta.dict`
         # fails later with no hint that the fix is a re-download.
@@ -1001,7 +1053,7 @@ def process_assembly(row, outdir, config_file, refgenie_bin, do_cleanup, logger,
     if not aliases_merged:
         problems.extend(merge_aliases(
             vault_name, assembly, auto_names, requested_aliases,
-            config_file, logger
+            config_file, logger, aliases_before
         ))
 
     return problems
