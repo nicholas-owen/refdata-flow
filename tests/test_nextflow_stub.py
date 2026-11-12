@@ -163,7 +163,7 @@ class StubRun(NextflowTestCase):
         self.assertEqual(set(by_name["seqOnly_ncbi"]["assets"]), {"fasta"})
         # Both Ensembl rows reached the vault, each under its own tag.
         self.assertEqual(set(by_name["toyAsm_ensembl"]["assets"]["ensembl_gtf"]["tags"]),
-                         {"stub", "110"})
+                         {"999", "110"})
 
 
 def load_vault(outdir):
@@ -196,7 +196,7 @@ class Registration(NextflowTestCase):
         # The pinned and the unpinned Ensembl download share an assembly name and a
         # directory name. Both tags present means each was matched to its own row.
         self.assertEqual(set(vault["toyAsm_ensembl"]["assets"]["ensembl_gtf"]["tags"]),
-                         {"stub", "110"})
+                         {"999", "110"})
         # Built by recipes/fasta.json, so each genome has its sequence dictionary,
         # beside its FASTA under the alias name. The file is checked, not the
         # config: refgenie can list a seek key for a file it never wrote.
@@ -209,6 +209,8 @@ class Registration(NextflowTestCase):
     def test_01_run_succeeds_with_one_register_task(self):
         self.assertEqual(self.run_result.returncode, 0, self.run_result.stdout[-3000:])
         self.assertEqual(self.run_result.stdout.count("Submitted process > REGISTER"), 1)
+        # Transcriptomes are opt-in.
+        self.assertNotIn("DERIVE_TXOME", self.run_result.stdout)
 
     def test_02_every_download_is_in_the_vault(self):
         self.assert_vault_complete(self.outdir)
@@ -310,6 +312,195 @@ class Registration(NextflowTestCase):
             self.assertTrue(os.path.isfile(
                 self.published("provenance", *parts, "provenance.json")), "/".join(parts))
         self.assert_vault_complete(self.outdir)
+
+
+def read_fasta(path):
+    """{record name: sequence} from a FASTA file, plain or gzipped."""
+    import gzip
+    records, name = {}, None
+    opener = gzip.open if path.endswith(".gz") else open
+    with opener(path, "rt") as f:
+        for line in f:
+            line = line.strip()
+            if line.startswith(">"):
+                name = line[1:].split()[0]
+                records[name] = ""
+            elif name is not None:
+                records[name] += line
+    return records
+
+
+@unittest.skipIf(ingest_unavailable(), ingest_unavailable())
+class Transcriptome(NextflowTestCase):
+    """
+    --txome: the path from REGISTER's manifest, through DERIVE_TXOME, into the vault.
+
+    Under -stub the derivation itself is a stand-in (one short record per
+    transcript in the GTF). Everything around it is real: which rows get a
+    transcriptome, the staging of vault files into the task, and the registration.
+    RealDerivation below runs gffread.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        cls.outdir = os.path.join(cls.work, "out")
+        cls.requests = cls.write_requests("requests_resolved.csv", REQUESTS)
+        cls.run_result = cls.nextflow(cls.requests, cls.outdir, "--txome", "true", register=True)
+
+    def refgenie(self, *arguments):
+        env = dict(os.environ, PATH=BIN_DIR + os.pathsep + os.environ.get("PATH", ""))
+        result = subprocess.run(
+            [sys.executable, REFGENIE, *arguments, "-c",
+             os.path.join(self.outdir, "refgenie_export.yaml")],
+            cwd=self.work, env=env, text=True, capture_output=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return result.stdout.strip().splitlines()[-1]
+
+    def test_01_run_succeeds(self):
+        self.assertEqual(self.run_result.returncode, 0, self.run_result.stdout[-3000:])
+
+    def test_02_one_transcriptome_per_genome_and_release(self):
+        derived = sorted(line.split("DERIVE_TXOME (")[1].rstrip(")")
+                         for line in self.run_result.stdout.splitlines()
+                         if "Submitted process > DERIVE_TXOME" in line)
+        # Both Ensembl releases and the GENCODE genome. Not the sequence-only
+        # genome: with no annotation there is nothing to derive from.
+        self.assertEqual(derived, ["toyAsm_ensembl:110", "toyAsm_ensembl:999",
+                                   "toyAsm_gencode:999"])
+
+    def test_03_tagged_with_the_annotation_release_newest_as_default(self):
+        vault = load_vault(self.outdir)
+        txome = vault["toyAsm_ensembl"]["assets"]["fasta_txome"]
+        self.assertEqual(set(txome["tags"]), {"110", "999"})
+        self.assertEqual(str(txome["default_tag"]), "999")
+        self.assertNotIn("fasta_txome", vault["seqOnly_ncbi"]["assets"])
+
+    def test_04_each_release_records_the_gtf_it_came_from(self):
+        vault = load_vault(self.outdir)
+        with open(os.path.join(self.outdir, "refgenie_export.yaml")) as f:
+            genomes = yaml.safe_load(f)["genomes"]
+        digest = next(d for d, g in genomes.items() if "toyAsm_ensembl" in g["aliases"])
+        tags = vault["toyAsm_ensembl"]["assets"]["fasta_txome"]["tags"]
+        for release in ("110", "999"):
+            self.assertEqual(set(tags[release]["asset_parents"]),
+                             {f"{digest}/fasta:default", f"{digest}/ensembl_gtf:{release}"})
+
+    def test_05_reachable_by_alias_with_its_index_and_provenance(self):
+        fasta = self.refgenie("seek", "mouse_gc/fasta_txome")
+        self.assertEqual(os.path.basename(fasta), "mouse_gc.fa")
+        self.assertEqual(list(read_fasta(fasta)), ["t1"])
+        self.assertTrue(os.path.isfile(fasta + ".fai"))
+        with open(self.refgenie("seek", "mouse_gc/fasta_txome.provenance")) as f:
+            self.assertEqual(json.load(f)["annotation"], "gencode_gtf:999")
+        # Not to be confused with the genome, which has the same file name one
+        # directory over.
+        self.assertNotEqual(fasta, self.refgenie("seek", "mouse_gc/fasta"))
+
+    def test_06_second_run_derives_nothing(self):
+        result = self.nextflow(self.requests, self.outdir, "--txome", "true", register=True)
+        self.assertEqual(result.returncode, 0, result.stdout[-3000:])
+        self.assertNotIn("DERIVE_TXOME", result.stdout)
+        self.assertNotIn("REGISTER_ASSET", result.stdout)
+
+    def test_07_transcriptome_can_be_added_to_genomes_already_in_the_vault(self):
+        # A vault built without --txome, asked for transcriptomes later: nothing is
+        # downloaded, and every annotated genome gets one.
+        outdir = os.path.join(self.work, "later.out")
+        self.assertEqual(self.nextflow(self.requests, outdir, register=True).returncode, 0)
+        result = self.nextflow(self.requests, outdir, "--txome", "true", register=True)
+        self.assertEqual(result.returncode, 0, result.stdout[-3000:])
+        self.assertNotIn("FETCH_GENOME", result.stdout)
+        self.assertEqual(result.stdout.count("Submitted process > DERIVE_TXOME"), 3)
+        self.assertIn("fasta_txome", load_vault(outdir)["toyAsm_gencode"]["assets"])
+
+
+def gffread_unavailable():
+    return ingest_unavailable() or (
+        None if shutil.which("gffread") else "gffread is not on PATH")
+
+
+@unittest.skipIf(gffread_unavailable(), gffread_unavailable())
+class RealDerivation(NextflowTestCase):
+    """
+    DERIVE_TXOME with the real gffread, on a genome built for the purpose.
+
+    No -stub here. The genome is put in the vault first by the ingest, so the
+    preflight skips the download and the workflow goes straight from REGISTER to
+    the real derivation. Needs gffread on PATH, which the pipeline's Python
+    environment does not have: run the suite inside an environment that does
+    (`conda create -n gffread -c bioconda gffread=0.12.7`) to include these.
+
+    Contig 1 is half lower case, as a soft-masked genome is. Transcript t2 is on
+    the minus strand with an intron, so a wrong answer cannot pass by accident.
+    """
+
+    CONTIG_1 = "ACGTacgt" * 5                    # 40 bases
+    CONTIG_2 = "AAAACCCCGGGGTTTTACGTAAAACCCCGGGGTTTTACGT"
+    HEADER_ROW = "Mus_musculus,toyAsm,Ensembl,TRUE,toyAsm,,mouse\n"
+
+    @staticmethod
+    def attributes(transcript):
+        return (f'gene_id "g_{transcript}"; gene_version "1"; transcript_id "{transcript}"; '
+                f'transcript_version "1"; exon_number "1"; gene_name "G"; gene_source "s"; '
+                f'gene_biotype "lncRNA";')
+
+    def build_vault(self, name, gtf_contig_prefix=""):
+        """Ingest a hand-written download; returns (outdir, resolved CSV)."""
+        import gzip
+        outdir = os.path.join(self.work, name)
+        download = os.path.join(outdir, "Ensembl", "Mus_musculus", "toyAsm")
+        os.makedirs(download)
+        with gzip.open(os.path.join(download, "toyAsm.fa.gz"), "wt") as f:
+            f.write(f">1\n{self.CONTIG_1}\n>2\n{self.CONTIG_2}\n")
+        p = gtf_contig_prefix
+        with gzip.open(os.path.join(download, "toyAsm.annotation.gtf.gz"), "wt") as f:
+            f.write(f"{p}1\tsrc\texon\t1\t30\t.\t+\t.\t{self.attributes('t1')}\n")
+            f.write(f"{p}2\tsrc\texon\t1\t10\t.\t-\t.\t{self.attributes('t2')}\n")
+            f.write(f"{p}2\tsrc\texon\t21\t30\t.\t-\t.\t{self.attributes('t2')}\n")
+        with open(os.path.join(download, "provenance.json"), "w") as f:
+            json.dump({"assembly": "toyAsm", "annotation_release": "116",
+                       "annotation_release_kind": "ensembl_release"}, f)
+        resolved = self.write_requests(name + ".csv", HEADER + self.HEADER_ROW)
+        env = dict(os.environ, PATH=BIN_DIR + os.pathsep + os.environ.get("PATH", ""))
+        result = subprocess.run([sys.executable, INGEST, resolved, outdir], cwd=self.work,
+                                env=env, text=True, stdout=subprocess.PIPE,
+                                stderr=subprocess.STDOUT)
+        self.assertEqual(result.returncode, 0, result.stdout[-3000:])
+        return outdir, resolved
+
+    def test_transcripts_are_the_spliced_strand_aware_upper_case_sequence(self):
+        outdir, resolved = self.build_vault("real.out")
+        result = self.nextflow(resolved, outdir, "--txome", "true", register=True, stub=False)
+        self.assertEqual(result.returncode, 0, result.stdout[-3000:])
+        self.assertNotIn("FETCH_GENOME", result.stdout)
+
+        complement = str.maketrans("ACGT", "TGCA")
+        spliced = self.CONTIG_2[0:10] + self.CONTIG_2[20:30]
+        expected = {
+            "t1": self.CONTIG_1[0:30].upper(),
+            "t2": spliced.translate(complement)[::-1],
+        }
+        directory = os.path.join(outdir, "alias", "mouse", "fasta_txome", "116")
+        self.assertEqual(read_fasta(os.path.join(directory, "mouse.fa")), expected)
+
+        with open(os.path.join(directory, "mouse.provenance.json")) as f:
+            record = json.load(f)
+        self.assertEqual(record["tool"], "gffread")
+        self.assertRegex(record["tool_version"], r"\d+\.\d+")
+        self.assertEqual((record["transcripts"], record["sequence_case"]), (2, "upper"))
+        self.assertEqual(record["annotation"], "ensembl_gtf:116")
+
+    def test_annotation_whose_contigs_are_not_in_the_genome_is_an_error(self):
+        # A chr-named GTF beside a genome whose contigs are 1 and 2. gffread
+        # exits 0 having written nothing; filing that as a transcriptome would
+        # put an empty asset in the vault under a confident name.
+        outdir, resolved = self.build_vault("mismatch.out", gtf_contig_prefix="chr")
+        result = self.nextflow(resolved, outdir, "--txome", "true", register=True, stub=False)
+        self.assertNotEqual(result.returncode, 0, result.stdout[-3000:])
+        self.assertIn("wrote no transcripts", result.stdout)
+        self.assertNotIn("fasta_txome", load_vault(outdir)["toyAsm_ensembl"]["assets"])
 
 
 class RequestValidation(NextflowTestCase):

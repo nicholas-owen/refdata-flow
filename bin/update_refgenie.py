@@ -407,17 +407,83 @@ def source_mismatch(source_dir, provider, assembly, release):
     return None
 
 
-MANIFEST_FIELDS = ["species", "assembly", "provider", "release", "vault_name", "digest"]
+def vault_roots(config, config_file):
+    """
+    Directories that may hold the vault's data/ tree, most likely first.
+
+    refgenie records the vault's location in the config; a config that was moved
+    by hand along with its vault can still carry the old one. The directory the
+    config sits in is where this pipeline always puts the vault, so it is tried too.
+    """
+    config_dir = os.path.dirname(os.path.abspath(config_file))
+    recorded = config.get("genome_folder")
+    return [recorded, config_dir] if recorded and recorded != config_dir else [config_dir]
+
+
+def asset_tags_on_disk(config, config_file, digest, asset):
+    """
+    The tags of an asset that the config lists AND that have a directory in the
+    vault.
+
+    Both, because refgenie's config can run ahead of the disk (see
+    fasta_has_dictionary), and a tag nobody can read is not a reason to skip work.
+    """
+    genome = (config.get("genomes") or {}).get(digest) or {}
+    listed = ((genome.get("assets") or {}).get(asset) or {}).get("tags") or {}
+    return {
+        str(tag) for tag in listed
+        if any(os.path.isdir(os.path.join(root, "data", digest, asset, str(tag)))
+               for root in vault_roots(config, config_file))
+    }
+
+
+def asset_file(config, config_file, digest, asset, tag, seek_key):
+    """
+    The absolute path of one file of an asset in the vault's data/ tree, or ''.
+
+    The data/ path, named by digest - not the alias path `refgenie seek` prints.
+    It is what a derive process is handed: it does not move when an alias is
+    added or removed. '' when the config does not list the file or it is not there.
+    """
+    genome = (config.get("genomes") or {}).get(digest) or {}
+    tags = ((genome.get("assets") or {}).get(asset) or {}).get("tags") or {}
+    # Compared as text: a tag like 116 can come back from YAML as a number or a
+    # string depending on who wrote the file.
+    tag_data = next((data for name, data in tags.items() if str(name) == str(tag)), None) or {}
+    filename = (tag_data.get("seek_keys") or {}).get(seek_key)
+    if not filename:
+        return ""
+    for root in vault_roots(config, config_file):
+        candidate = os.path.join(root, "data", digest, asset, str(tag), filename)
+        if os.path.isfile(candidate):
+            return candidate
+    return ""
+
+
+MANIFEST_FIELDS = [
+    "species", "assembly", "provider", "release", "vault_name", "digest",
+    # What a derive process needs to build something FROM this genome:
+    "fasta",             # the genome FASTA in the vault ('' if not there)
+    "annotation_asset",  # e.g. ensembl_gtf; '' when no annotation was requested
+    "annotation_tag",    # the release this row means: its pin, else the default tag
+    "gtf",               # that release's GTF in the vault ('' if not there)
+    "fasta_txome_tags",  # ';'-joined releases a transcriptome already exists for
+]
 
 
 def write_manifest(path, rows, config_file):
     """
-    Write a TSV of the requested genomes that are in the vault, with their digests.
+    Write a TSV of the requested genomes that are in the vault.
 
     This is what a later stage needs to build something FROM a registered genome:
-    the name to `refgenie seek` and the digest that identifies the sequence. A row
-    that did not reach the vault is left out, so nothing downstream is started on
-    a genome that is not there.
+    the name to register under, the digest that identifies the sequence, and where
+    the genome and the requested annotation release are. A row that did not reach
+    the vault is left out, so nothing downstream is started on a genome that is not
+    there; a file that is not on disk is an empty field, for the same reason.
+
+    `annotation_tag` is what the row means by "the annotation": the pinned release
+    if it has one, otherwise the asset's default tag, which the ingest keeps on the
+    newest release held.
     """
     with open(config_file, "r") as f:
         config = yaml.safe_load(f) or {}
@@ -432,19 +498,38 @@ def write_manifest(path, rows, config_file):
         for row in rows:
             assembly = (row.get("assembly") or "").strip()
             provider = (row.get("provider") or "").strip()
+            pinned = (row.get("release") or "").strip()
+            wants_annotation = (row.get("annotation") or "false").strip().lower() == "true"
             try:
                 vault_name = vault_genome_name(assembly, provider)
             except ValueError:
                 continue
             if vault_name not in digest_of:
                 continue
+            digest = digest_of[vault_name]
+
+            annotation_asset = annotation_tag = gtf = ""
+            recipe = ANNOTATION_RECIPES.get(provider.lower())
+            if wants_annotation and recipe:
+                assets = (config["genomes"][digest].get("assets") or {})
+                tag = pinned or (assets.get(recipe) or {}).get("default_tag")
+                if tag:
+                    annotation_asset, annotation_tag = recipe, str(tag)
+                    gtf = asset_file(config, config_file, digest, recipe, tag, recipe)
+
             writer.writerow({
                 "species": (row.get("species") or "").strip(),
                 "assembly": assembly,
                 "provider": provider,
-                "release": (row.get("release") or "").strip(),
+                "release": pinned,
                 "vault_name": vault_name,
-                "digest": digest_of[vault_name],
+                "digest": digest,
+                "fasta": asset_file(config, config_file, digest, "fasta", "default", "fasta"),
+                "annotation_asset": annotation_asset,
+                "annotation_tag": annotation_tag,
+                "gtf": gtf,
+                "fasta_txome_tags": ";".join(sorted(
+                    asset_tags_on_disk(config, config_file, digest, "fasta_txome"))),
             })
 
 

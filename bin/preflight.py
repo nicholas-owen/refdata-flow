@@ -90,26 +90,6 @@ def load_config(config_file):
         return None
 
 
-def tags_on_disk(config, config_file, digest, asset):
-    """
-    The tags of an asset that the config lists AND that have a directory in the
-    vault.
-
-    Both, because refgenie's config can run ahead of the disk (see
-    update_refgenie.fasta_has_dictionary), and a tag nobody can read is not a
-    reason to skip a download.
-    """
-    genome = (config.get("genomes") or {}).get(digest) or {}
-    listed = ((genome.get("assets") or {}).get(asset) or {}).get("tags") or {}
-    config_dir = os.path.dirname(os.path.abspath(config_file))
-    roots = [config.get("genome_folder") or config_dir, config_dir]
-    return {
-        str(tag) for tag in listed
-        if any(os.path.isdir(os.path.join(root, "data", digest, asset, str(tag)))
-               for root in roots)
-    }
-
-
 def assess(row, config, config_file, current_release=current_annotation_release,
            check_releases=True):
     """
@@ -152,7 +132,9 @@ def assess(row, config, config_file, current_release=current_annotation_release,
         # The ingest reports this properly; let it, rather than hide the row here.
         return True, f"no annotation recipe for provider '{provider}'"
 
-    tags = tags_on_disk(config, config_file, digest, asset)
+    # On disk as well as in the config: refgenie's config can list a tag whose
+    # files were never written, and that is not a reason to skip a download.
+    tags = vault.asset_tags_on_disk(config, config_file, digest, asset)
     if not tags:
         return True, f"genome is in the vault but its {asset} annotation is not"
 

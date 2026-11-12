@@ -234,6 +234,113 @@ class ToyVault(unittest.TestCase):
 
 
 @unittest.skipIf(missing_requirement(), missing_requirement())
+class RegisterDerivedAsset(unittest.TestCase):
+    """
+    bin/register_asset.py: file something BUILT from a genome against that genome.
+
+    The transcript FASTA here is written by hand; deriving one is DERIVE_TXOME's
+    job and is tested where gffread is available (tests/test_nextflow_stub.py).
+    """
+
+    REGISTER = os.path.join(REPO, "bin", "register_asset.py")
+
+    def setUp(self):
+        self.work = tempfile.mkdtemp(prefix="refdata-flow-test-")
+        self.addCleanup(shutil.rmtree, self.work, ignore_errors=True)
+        self.outdir = os.path.join(self.work, "out")
+        self.config_file = os.path.join(self.outdir, "refgenie_export.yaml")
+        fake_download(os.path.join(self.outdir, "Ensembl", "Mus_musculus", "toyAsm"),
+                      "", "116", "ensembl_release")
+        fake_download(os.path.join(self.outdir, "Ensembl", "Mus_musculus", "release-110", "toyAsm"),
+                      "", "110", "ensembl_release")
+        resolved = os.path.join(self.work, "requests_resolved.csv")
+        with open(resolved, "w", newline="") as f:
+            f.write("species,assembly,provider,annotation,query,release,aliases\n"
+                    "Mus_musculus,toyAsm,Ensembl,TRUE,toyAsm,,mouse\n"
+                    "Mus_musculus,toyAsm,Ensembl,TRUE,toyAsm,110,mouse\n")
+        result = subprocess.run([sys.executable, INGEST, resolved, self.outdir], cwd=self.work,
+                                env=ENV, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        self.assertEqual(result.returncode, 0, result.stdout[-3000:])
+
+    def derived(self, tag):
+        """A transcript FASTA and its provenance record, as DERIVE_TXOME leaves them."""
+        transcripts = os.path.join(self.work, f"transcripts-{tag}.fa.gz")
+        with gzip.open(transcripts, "wt") as f:
+            f.write(f">t1\nACGTACGTAC\n>t2_release_{tag}\nTTGGCCAATT\n")
+        provenance = os.path.join(self.work, f"provenance-{tag}.json")
+        with open(provenance, "w") as f:
+            json.dump({"asset": "fasta_txome", "annotation": f"ensembl_gtf:{tag}"}, f)
+        return transcripts, provenance
+
+    def register(self, tag, genome="toyAsm_ensembl", transcripts=None):
+        made, provenance = self.derived(tag)
+        return subprocess.run(
+            [sys.executable, self.REGISTER, self.outdir, "--genome", genome,
+             "--asset", "fasta_txome", "--tag", tag,
+             "--file", f"transcripts={transcripts or made}", "--file", f"provenance={provenance}",
+             "--parent", f"annotation=ensembl_gtf:{tag}"],
+            cwd=self.work, env=ENV, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        )
+
+    def txome(self):
+        with open(self.config_file) as f:
+            genomes = yaml.safe_load(f)["genomes"]
+        (digest, genome), = genomes.items()
+        return digest, genome["assets"].get("fasta_txome")
+
+    def seek(self, registry_path):
+        result = subprocess.run(
+            [sys.executable, REFGENIE, "seek", "-c", self.config_file, registry_path],
+            cwd=self.work, env=ENV, text=True, capture_output=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return result.stdout.strip().splitlines()[-1]
+
+    def test_asset_is_built_tagged_and_reachable_under_every_alias(self):
+        result = self.register("116")
+        self.assertEqual(result.returncode, 0, result.stdout[-3000:])
+        digest, asset = self.txome()
+        self.assertEqual(set(asset["tags"]), {"116"})
+        for alias in ("toyAsm_ensembl", "toyAsm", "mouse"):
+            fasta = self.seek(f"{alias}/fasta_txome")
+            self.assertTrue(os.path.isfile(fasta), fasta)
+            self.assertTrue(os.path.isfile(fasta + ".fai"), alias)
+            with open(fasta) as f:
+                self.assertEqual(f.readline().strip(), ">t1")
+        with open(self.seek("mouse/fasta_txome.provenance")) as f:
+            self.assertEqual(json.load(f)["annotation"], "ensembl_gtf:116")
+
+    def test_both_inputs_are_recorded_as_parents(self):
+        self.assertEqual(self.register("116").returncode, 0)
+        digest, asset = self.txome()
+        self.assertEqual(set(asset["tags"]["116"]["asset_parents"]),
+                         {f"{digest}/fasta:default", f"{digest}/ensembl_gtf:116"})
+
+    def test_older_release_registered_later_does_not_take_the_default(self):
+        self.assertEqual(self.register("116").returncode, 0)
+        result = self.register("110")
+        self.assertEqual(result.returncode, 0, result.stdout[-3000:])
+        _, asset = self.txome()
+        self.assertEqual(set(asset["tags"]), {"110", "116"})
+        self.assertEqual(str(asset["default_tag"]), "116")
+        self.assertIn("/116/", self.seek("mouse/fasta_txome"))
+        with open(self.seek("mouse/fasta_txome:110")) as f:
+            self.assertIn(">t2_release_110", f.read())
+
+    def test_genome_that_is_not_in_the_vault_is_refused(self):
+        result = self.register("116", genome="toyAsm_gencode")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("is not in the vault", result.stdout)
+        self.assertIsNone(self.txome()[1])
+
+    def test_missing_input_file_is_refused(self):
+        result = self.register("116", transcripts=os.path.join(self.work, "nothing.fa.gz"))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("--file expects", result.stdout)
+        self.assertIsNone(self.txome()[1])
+
+
+@unittest.skipIf(missing_requirement(), missing_requirement())
 class AliasRetention(unittest.TestCase):
     """
     An alias, once granted, stays.
@@ -449,6 +556,35 @@ class StagedSources(unittest.TestCase):
         digests = {r["vault_name"]: r["digest"] for r in rows}
         self.assertEqual(set(digests.values()), set(self.genomes()))
         self.assertNotEqual(digests["toyAsm_ensembl"], digests["toyAsm_gencode"])
+
+        # What a derive process is handed: the genome and the annotation release
+        # the row means, as files in the vault's data/ tree, named by digest.
+        for row, asset, tag, contig in zip(rows, ("ensembl_gtf", "gencode_gtf"),
+                                           ("116", "M33"), ("1", "chr1")):
+            self.assertEqual((row["annotation_asset"], row["annotation_tag"]), (asset, tag))
+            self.assertEqual(row["fasta_txome_tags"], "")
+            for path in (row["fasta"], row["fasta"] + ".fai", row["gtf"]):
+                self.assertTrue(os.path.isfile(path), path)
+                self.assertIn(os.path.join("data", row["digest"]), path)
+            with open(row["fasta"]) as f:
+                self.assertEqual(f.readline().strip(), ">" + contig)
+            with gzip.open(row["gtf"], "rt") as f:
+                self.assertEqual(f.readline().split("\t")[0], contig)
+
+    def test_manifest_leaves_annotation_blank_when_none_was_requested(self):
+        with open(self.resolved, "w", newline="") as f:
+            f.write(self.RESOLVED.replace("TRUE", "false"))
+        manifest = os.path.join(self.work, "registered.tsv")
+        result = self.ingest("--source", f"ensembl/toyAsm@={self.ensembl}",
+                             "--source", f"gencode/toyAsm@={self.gencode}",
+                             "--manifest", manifest)
+        self.assertEqual(result.returncode, 0, result.stdout[-3000:])
+        with open(manifest, newline="") as f:
+            rows = list(csv.DictReader(f, delimiter="\t"))
+        for row in rows:
+            self.assertTrue(os.path.isfile(row["fasta"]))
+            self.assertEqual((row["annotation_asset"], row["annotation_tag"], row["gtf"]),
+                             ("", "", ""))
 
     def test_staged_source_is_never_deleted_by_cleanup(self):
         result = self.ingest("--cleanup",

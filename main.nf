@@ -75,6 +75,11 @@ def rejectDuplicates(List rows) {
 process FETCH_GENOME {
     tag "${species}_${assembly}"
 
+    // Needs outbound network, which compute nodes often do not have. A scheduler
+    // profile uses this label to keep the task on the machine Nextflow was
+    // launched from (see conf/sge.config).
+    label 'network'
+
     // When params.debug is true, stream the task's stdout to the Nextflow console
     // so download.py's phase messages ([1/3] Starting, [2/3] Downloading…,
     // [3/3] Writing provenance…) appear live instead of only the single status
@@ -194,7 +199,10 @@ process FETCH_GENOME {
     def prv = safe(provider, 'provider')
     def want_gtf = annotation.toString().toLowerCase() == 'true'
     def chr = ['ucsc', 'gencode'].contains(prv.toLowerCase()) ? 'chr' : ''
-    def rel_tag = release ?: 'stub'
+    // An unpinned request stands for "the current release". 999 plays that part:
+    // a number, like every real release, and above any a test would pin, so the
+    // newest-release-is-the-default rule behaves here as it does on real data.
+    def rel_tag = release ?: '999'
     def attrs = 'gene_id "g1"; gene_version "1"; gene_name "G1"; gene_source "stub"; gene_biotype "protein_coding";'
     def exon_attrs = 'gene_id "g1"; gene_version "1"; transcript_id "t1"; transcript_version "1"; exon_number "1"; gene_name "G1"; gene_source "stub"; gene_biotype "protein_coding";'
     def release_json = want_gtf ? ", \"annotation_release\": \"${rel_tag}\", \"annotation_release_kind\": \"stub\"" : ''
@@ -306,6 +314,115 @@ process REGISTER {
     update_refgenie.py "${resolved_csv}" "${vault}" \\
         --manifest registered.tsv ${cleanup_flag} \\
         ${source_args}
+    """
+}
+
+// Derive a transcriptome from a genome and an annotation release already in the
+// vault: `gffread -w` over the vault's own FASTA and GTF.
+//
+// This is the first process that does real computing rather than fetching or
+// filing, so it is the first that goes wherever the profile sends it - a compute
+// node under -profile sge. It needs no network and does not touch the vault's
+// config: its inputs are staged from the vault's data/ tree and its outputs go to
+// REGISTER_ASSET, which is the only thing that writes them back.
+//
+// Derived, never downloaded, and nothing is filtered. A provider's cDNA file
+// leaves out non-coding genes and is cut from an assembly with more contigs than
+// the vault's genome has; deriving gives the annotation's transcripts, all of
+// them, from the sequence actually held. See recipes/fasta_txome.json.
+//
+// Three details that are easy to undo by accident:
+//
+//   * `fai` is an input although the script never names it. gffread looks for
+//     <fasta>.fai beside the FASTA and, finding none, tries to write one - into
+//     the vault. Staging both puts them side by side in the task directory.
+//   * Sequence is upper-cased. The vault's genomes are soft-masked, so gffread
+//     emits lower-case repeats; no provider's cDNA looks like that, and how each
+//     quantifier treats them is not something a reference should leave open.
+//   * An empty result is an error. gffread writes nothing, and exits 0, when the
+//     GTF's contig names do not match the FASTA's - the one case where a GTF and
+//     a genome that do not belong together would otherwise be filed as a pair.
+//
+// The provenance file has no timestamp on purpose: the same inputs and the same
+// gffread give byte-identical outputs, and so the same asset digest.
+process DERIVE_TXOME {
+    tag "${genome}:${release}"
+    label 'derive'
+    cpus 1
+    memory '4 GB'
+    time '2h'
+
+    input:
+    tuple val(genome), val(annotation_asset), val(release), path(fasta), path(fai), path(gtf)
+
+    output:
+    tuple val(genome), val(annotation_asset), val(release), path("${genome}.transcripts.fa.gz"), path("${genome}.provenance.json")
+
+    script:
+    """
+    if ! command -v gffread >/dev/null 2>&1; then
+        echo "[${genome}] ERROR: gffread is not on PATH. The conda profile supplies it; outside conda, install it with: conda install -c bioconda gffread" >&2
+        exit 3
+    fi
+
+    gzip -dcf "${gtf}" > annotation.gtf
+    gffread -w transcripts.fa -g "${fasta}" annotation.gtf
+
+    n=\$(grep -c '^>' transcripts.fa || true)
+    if [ "\${n:-0}" -eq 0 ]; then
+        echo "[${genome}] ERROR: gffread wrote no transcripts from ${annotation_asset}:${release}. The usual cause is contig names in the GTF that do not match the genome." >&2
+        exit 1
+    fi
+
+    awk '/^>/ {print; next} {print toupper(\$0)}' transcripts.fa | gzip -nc > "${genome}.transcripts.fa.gz"
+
+    version=\$(gffread --version 2>&1 | head -n 1)
+    printf '{"asset": "fasta_txome", "genome": "%s", "annotation": "%s:%s", "tool": "gffread", "tool_version": "%s", "command": "gffread -w transcripts.fa -g GENOME.fa ANNOTATION.gtf", "sequence_case": "upper", "transcripts": %s}\\n' \\
+        "${genome}" "${annotation_asset}" "${release}" "\$version" "\$n" > "${genome}.provenance.json"
+    """
+
+    // For `-stub`: one short record per transcript_id in the GTF, with no gffread.
+    // Enough for the tests to follow a transcriptome from the manifest into the
+    // vault; the real derivation is tested separately, where gffread is installed.
+    stub:
+    """
+    gzip -dcf "${gtf}" | grep -o 'transcript_id "[^"]*"' | sort -u \\
+        | sed 's/transcript_id "\\(.*\\)"/>\\1/' \\
+        | while read -r header; do echo "\$header"; echo ACGTACGTACGTACGTACGT; done \\
+        | gzip -nc > "${genome}.transcripts.fa.gz"
+    n=\$(gzip -dc "${genome}.transcripts.fa.gz" | grep -c '^>' || true)
+    printf '{"stub": true, "asset": "fasta_txome", "genome": "%s", "annotation": "%s:%s", "tool": "stub", "transcripts": %s}\\n' \\
+        "${genome}" "${annotation_asset}" "${release}" "\$n" > "${genome}.provenance.json"
+    """
+}
+
+// File a derived asset in the vault, against the genome it was derived from.
+//
+// The counterpart of REGISTER for things that were built, not downloaded. One
+// task per asset, one at a time: like REGISTER it edits the vault's single config,
+// runs on the launching machine with the wrapper's Python environment, and is
+// never cached. Order does not matter here - no two derived assets compete for a
+// name - so there is no need to batch them into one task as REGISTER does.
+//
+// The annotation release is both the tag and a recorded parent, so the vault says
+// which GTF a transcriptome came from and `refgenie seek <genome>/fasta_txome:116`
+// means what it looks like it means.
+process REGISTER_ASSET {
+    tag "${genome}/fasta_txome:${release}"
+    maxForks 1
+    cache false
+    debug(params.debug.toString().toLowerCase() == 'true')
+
+    input:
+    val vault
+    tuple val(genome), val(annotation_asset), val(release), path(transcripts), path(provenance)
+
+    script:
+    """
+    export PATH="${params.venv_bin}:\$PATH"
+    register_asset.py "${vault}" --genome "${genome}" --asset fasta_txome --tag "${release}" \\
+        --file "transcripts=${transcripts}" --file "provenance=${provenance}" \\
+        --parent "annotation=${annotation_asset}:${release}"
     """
 }
 
@@ -424,5 +541,37 @@ workflow {
             .set { downloads_ch }
 
         REGISTER(file(params.input, checkIfExists: true), vault, downloads_ch)
+
+        // Transcriptomes, when asked for. REGISTER's manifest lists every requested
+        // genome that is in the vault, with the annotation release the row means
+        // and the releases a transcriptome already exists for. So this covers a
+        // genome downloaded in this run and one that has been in the vault for
+        // months alike, and derives only what is missing.
+        //
+        //   * a row with no annotation, or whose GTF is not in the vault, has
+        //     nothing to derive from and is left alone;
+        //   * two rows can mean the same genome and release (a pinned 116 and an
+        //     unpinned row while 116 is current), hence `unique`;
+        //   * the values come out of a file, so they go through safe() again
+        //     before a script interpolates them.
+        if( isTrue(params.txome) ) {
+            REGISTER.out.manifest
+                .splitCsv(header: true, sep: '\t')
+                .filter { row ->
+                    row.fasta && row.gtf && row.annotation_tag &&
+                        !(row.fasta_txome_tags ?: '').tokenize(';').contains(row.annotation_tag)
+                }
+                .unique { row -> "${row.vault_name}:${row.annotation_tag}".toString() }
+                .map { row ->
+                    tuple(safe(row.vault_name, 'vault_name'),
+                          safe(row.annotation_asset, 'annotation_asset'),
+                          safe(row.annotation_tag, 'annotation_tag'),
+                          file(row.fasta), file("${row.fasta}.fai"), file(row.gtf))
+                }
+                .set { txome_ch }
+
+            DERIVE_TXOME(txome_ch)
+            REGISTER_ASSET(vault, DERIVE_TXOME.out)
+        }
     }
 }

@@ -57,15 +57,23 @@ jobs:
         with:
           version: "26.04.4"
 
+      # The RealDerivation tests run the transcriptome derivation with the real
+      # tool. The pipeline itself takes gffread from bioconda, pinned to 0.12.7;
+      # here the distribution's package is enough to exercise the same command.
+      - name: Install gffread
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gffread
+
       # Runs after the dry run on purpose: that step is what builds .venv and
       # writes the samtools shim the ingest tests need. No genome provider is
       # contacted - the resolver tests fake the provider search, the Nextflow
       # tests run the stub block, and the ingest tests build a refgenie vault from
       # toy genomes a few dozen bases long.
       #
-      # The tests skip themselves when refgenie, samtools or nextflow is missing,
-      # which is right on a laptop and wrong here: this job installs all three, so
-      # a skip means the setup above broke and the suite proved nothing.
+      # The tests skip themselves when refgenie, samtools, nextflow or gffread is
+      # missing, which is right on a laptop and wrong here: this job installs all
+      # four, so a skip means the setup above broke and the suite proved nothing.
       - name: Unit, ingest and Nextflow tests
         run: |
           .venv/bin/python -m unittest discover -s tests -v 2>&1 | tee "$RUNNER_TEMP/tests.log"

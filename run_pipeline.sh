@@ -33,8 +33,12 @@ DEBUG=0
 CLEANUP=0
 NONINTERACTIVE=0
 REFETCH=0
+TXOME=0
+# Nextflow profiles. conda is always on - it supplies the tools - and --profile
+# adds to it, e.g. `--profile sge` runs with `-profile conda,sge`.
+PROFILES="conda"
 
-USAGE="Usage: bash run_pipeline.sh [requests.csv] [--outdir /path/to/save] [--cleanup] [--refetch] [--non-interactive] [--clean] [--dry-run] [--debug] [--version]"
+USAGE="Usage: bash run_pipeline.sh [requests.csv] [--outdir /path/to/save] [--txome] [--profile sge] [--cleanup] [--refetch] [--non-interactive] [--clean] [--dry-run] [--debug] [--version]"
 
 # Parse command line arguments
 while [[ "$#" -gt 0 ]]; do
@@ -70,6 +74,21 @@ while [[ "$#" -gt 0 ]]; do
             # holds. By default the vault is asked first and only what it lacks is
             # fetched; this is for the case where a copy in the vault is suspect.
             REFETCH=1
+            ;;
+        --txome)
+            # Also derive a transcriptome for each requested genome that has an
+            # annotation, from the vault's own FASTA and GTF (the fasta_txome asset).
+            TXOME=1
+            ;;
+        --profile)
+            # An extra Nextflow profile, added to conda. Checked against a plain
+            # allowlist: the value ends up on a command line.
+            if [[ ! "${2:-}" =~ ^[A-Za-z0-9_,]+$ ]]; then
+                echo "Error: --profile needs a profile name, e.g. --profile sge"
+                exit 1
+            fi
+            PROFILES="conda,$2"
+            shift
             ;;
         --clean)
             echo "Cleaning up Nextflow cache, logs, and work directories..."
@@ -372,7 +391,7 @@ echo "[Step 2] Launching Nextflow pipeline (download, then catalogue in refgenie
 #
 # An array, not a string: a string is split on spaces when expanded, so an
 # --outdir with a space in it became two arguments.
-NF_ARGS=(-profile conda --input "$RESOLVED_CSV" --outdir "$OUTDIR" --venv_bin "$VENV_BIN" -resume)
+NF_ARGS=(-profile "$PROFILES" --input "$RESOLVED_CSV" --outdir "$OUTDIR" --venv_bin "$VENV_BIN" -resume)
 if [ "$CLEANUP" -eq 1 ]; then
     # Sources are not kept under --outdir, and copies an earlier run left there
     # are removed once each genome is verified into the vault.
@@ -382,6 +401,10 @@ fi
 if [ "$REFETCH" -eq 1 ]; then
     echo "[Step 2] --refetch: every request will be downloaded, whatever the vault holds."
     NF_ARGS+=(--preflight false)
+fi
+if [ "$TXOME" -eq 1 ]; then
+    echo "[Step 2] --txome: a transcriptome will be derived for each annotated genome that lacks one."
+    NF_ARGS+=(--txome true)
 fi
 if [ "$DEBUG" -eq 1 ]; then
     echo "[Step 2] Debug mode: streaming per-task progress."
