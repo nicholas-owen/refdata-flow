@@ -38,6 +38,7 @@ format update_refgenie.source_key() defines, and a report to stdout.
 """
 import argparse
 import csv
+import json
 import os
 import sys
 
@@ -145,6 +146,10 @@ def assess(row, config, config_file, current_release=current_annotation_release,
                       f"(it has {', '.join(sorted(tags))})")
 
     held = ", ".join(sorted(tags))
+    if provider.lower() == "url":
+        # An address is one file. There is no provider to ask what is current, and
+        # no newer release to follow: a different file is a different address.
+        return False, f"genome and {asset} ({held}) are in the vault, from the address given"
     if not check_releases:
         return False, f"genome and {asset} ({held}) are in the vault; release check is off"
 
@@ -155,6 +160,55 @@ def assess(row, config, config_file, current_release=current_annotation_release,
     if current in tags:
         return False, f"genome and {asset}:{current} are in the vault, and {current} is current"
     return True, f"{provider} now publishes {asset} release {current}; the vault has {held}"
+
+
+def address_conflict(row, config, config_file):
+    """
+    For a genome requested by address: is its name already in the vault, taken
+    from a DIFFERENT address? Returns a description, or None.
+
+    A named assembly from a provider is the same thing whoever asks for it. A
+    genome requested by address is whatever file sits at that address, under
+    whatever name the request gives it. So the same name with another address is
+    a different genome - and the vault would not notice: the name is there, the
+    preflight would skip the download, and the request would be "satisfied" by
+    the file somebody else fetched. Fetching it would not help either, because
+    the ingest keeps the genome a name already has.
+
+    So it is neither skipped nor fetched. It is refused, here, before anything
+    is downloaded, and the request has to use another name.
+
+    Only the vault's own records can say where a genome came from. One ingested
+    before the address was recorded has nothing to compare, and is let through.
+    """
+    provider = (row.get("provider") or "").strip()
+    assembly = (row.get("assembly") or "").strip()
+    wanted = (row.get("url") or "").strip()
+    if provider.lower() != "url" or not wanted or config is None:
+        return None
+    try:
+        vault_name = vault.vault_genome_name(assembly, provider)
+    except ValueError:
+        return None
+    for digest, data in (config.get("genomes") or {}).items():
+        if vault_name not in ((data or {}).get("aliases") or []):
+            continue
+        recorded = set()
+        for tag in vault.asset_tags_on_disk(config, config_file, digest, "provenance"):
+            path = vault.asset_file(config, config_file, digest, "provenance", tag, "provenance")
+            try:
+                with open(path) as fh:
+                    address = (json.load(fh).get("url_requested") or "").strip()
+            except (OSError, ValueError):
+                continue
+            if address:
+                recorded.add(address)
+        if recorded and wanted not in recorded:
+            return (f"'{vault_name}' is already in the vault, taken from "
+                    f"{', '.join(sorted(recorded))}. This request gives {wanted}. A name "
+                    "identifies one genome: give this one a different name in the query "
+                    "column")
+    return None
 
 
 def main():
@@ -182,13 +236,18 @@ def main():
         print(f"Preflight: cannot read '{args.resolved_csv}': {e}", file=sys.stderr)
         sys.exit(1)
 
-    keys = []
+    keys, conflicts = [], []
     print(f"Preflight: checking {len(rows)} request(s) against the vault at {args.outdir}",
           flush=True)
     for row in rows:
         assembly = (row.get("assembly") or "").strip()
         provider = (row.get("provider") or "").strip()
         release = (row.get("release") or "").strip()
+        conflict = address_conflict(row, config, config_file)
+        if conflict:
+            print(f"  STOP   {assembly} from {provider}: {conflict}", flush=True)
+            conflicts.append(conflict)
+            continue
         try:
             fetch, reason = assess(row, config, config_file,
                                    check_releases=not args.no_release_check)
@@ -202,6 +261,16 @@ def main():
 
     with open(args.fetch_keys, "w") as f:
         f.write("".join(key + "\n" for key in keys))
+
+    if conflicts:
+        # Before any download. The run cannot give the user what the request
+        # describes, and carrying on would report success for a genome it did
+        # not fetch.
+        print(f"Preflight: stopping. {len(conflicts)} request(s) name a genome that is in "
+              "the vault from a different address (see STOP above). Nothing was "
+              "downloaded.", file=sys.stderr, flush=True)
+        sys.exit(1)
+
     print(f"Preflight: {len(keys)} to download, {len(rows) - len(keys)} already in the vault.",
           flush=True)
 

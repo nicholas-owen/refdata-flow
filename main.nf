@@ -17,6 +17,20 @@ def safe(String val, String field) {
     return val
 }
 
+// An address for a genome requested by URL, or '' when the row has none.
+//
+// The same rule as URL_RE in bin/resolve.py, which has already applied it; this
+// is the guard for a resolved CSV written by hand. An address is interpolated into
+// a shell command inside double quotes, so the characters a shell still acts on
+// there - $, backtick, double quote, backslash - must not get through, and the
+// allowlist is kept narrow enough to read at a glance.
+def safeUrl(val, String field) {
+    def text = (val ?: '').toString().trim()
+    if( text && !(text ==~ /^(https?|ftp):\/\/[A-Za-z0-9._~\/%+=:@,-]+$/) )
+        error "Unusable ${field}: '${text}'. It must be an http, https or ftp address using only letters, digits and . _ ~ / % + = : @ , -"
+    return text
+}
+
 // Read a parameter as a boolean or a whole number, whatever type it arrived as.
 //
 // A value from nextflow.config is a Boolean or an Integer. The same parameter
@@ -54,7 +68,7 @@ def asInt(value, String name) {
 // provenance.json that survives can belong to the sequence-only task.
 //
 // Each row is the tuple built in the workflow below: species, assembly, provider,
-// annotation, release. Provider is compared case-insensitively because genomepy
+// annotation, release, then the two addresses, which play no part here. Provider is compared case-insensitively because genomepy
 // reports 'Ensembl' while a hand-written file may say 'ensembl'.
 //
 // Call this from a `map`, not a `flatMap`. Under Nextflow 26.04 an error() raised
@@ -139,7 +153,7 @@ process FETCH_GENOME {
     }, mode: 'copy', enabled: params.cleanup.toString().toLowerCase() != 'true'
 
     input:
-    tuple val(species), val(assembly), val(provider), val(annotation), val(release)
+    tuple val(species), val(assembly), val(provider), val(annotation), val(release), val(url), val(annotation_url)
 
     // The three values travel with the directory so REGISTER can tell which request
     // it answers: a directory called GRCm39 does not say whose GRCm39 it is.
@@ -166,6 +180,11 @@ process FETCH_GENOME {
         error "Unsafe or non-numeric release: '${rel}'"
     def release_flag = rel ? "--release ${rel}" : ''
 
+    // A genome requested by address (provider 'url'). Both values went through
+    // safeUrl() in the workflow block, and are empty for every other provider.
+    def url_flag = url ? "--url \"${url}\"" : ''
+    def annotation_url_flag = annotation_url ? "--annotation-url \"${annotation_url}\"" : ''
+
     // download.py is called without an explicit path - Nextflow automatically adds
     // the project bin/ directory to PATH inside every process (fixes issue 3.1).
     """
@@ -173,8 +192,11 @@ process FETCH_GENOME {
         --species "${sp}" \\
         --assembly "${asm}" \\
         --provider "${prv}" \\
+        --pipeline-version "${workflow.manifest.version}" \\
         ${annotation_flag} \\
-        ${release_flag}
+        ${release_flag} \\
+        ${url_flag} \\
+        ${annotation_url_flag}
     """
 
     // `nextflow run -stub` runs this instead of the script above: no network, no
@@ -479,8 +501,17 @@ workflow {
             def rel = (row.release ?: '').toString().trim()
             if( rel && !(rel ==~ /^[0-9]+$/) )
                 error "Unsafe or non-numeric release: '${rel}'"
+            def url = safeUrl(row.url, 'url')
+            def annotation_url = safeUrl(row.annotation_url, 'annotation_url')
+            def provider = safe(row.provider, 'provider')
+            // The address is the whole of such a request. Without it genomepy
+            // would be asked to fetch a file called after the assembly.
+            if( provider.toLowerCase() == 'url' && !url )
+                error "Provider 'url' needs an address in the url column (assembly '${row.assembly}')"
+            if( provider.toLowerCase() != 'url' && (url || annotation_url) )
+                error "The url columns are only used with provider 'url' (assembly '${row.assembly}', provider '${provider}')"
             tuple(safe(row.species, 'species'), safe(row.assembly, 'assembly'),
-                  safe(row.provider, 'provider'), row.annotation, rel)
+                  provider, row.annotation, rel, url, annotation_url)
         }
         // Collected so the whole list can be checked for duplicates before any
         // task starts; flatMap then emits the rows one at a time again. The check
@@ -509,11 +540,11 @@ workflow {
 
         requests_ch
             .combine(wanted_ch)
-            .filter { _species, assembly, provider, _annotation, release, wanted ->
+            .filter { _species, assembly, provider, _annotation, release, _url, _annotation_url, wanted ->
                 wanted.contains("${provider.toLowerCase()}/${assembly}@${release}".toString())
             }
-            .map { species, assembly, provider, annotation, release, _wanted ->
-                tuple(species, assembly, provider, annotation, release)
+            .map { species, assembly, provider, annotation, release, url, annotation_url, _wanted ->
+                tuple(species, assembly, provider, annotation, release, url, annotation_url)
             }
             .set { fetch_ch }
     }

@@ -1,0 +1,19 @@
+{
+  "name": "provenance",
+  "description": "The record of one download, as written by bin/download.py: what was requested, the source URLs, assembly accession and taxon, the arguments that decided which variant of the assembly was delivered, checksums of the delivered files, a summary of the annotation, tool versions and the retrieval time in UTC. A passthrough - the file is stored as it was written. Tagged with the annotation release the download carried, or 'default' for a download of sequence alone, so a genome held at two annotation releases keeps a record of each. It lives in the vault, keyed by the genome's digest and reachable by every alias, so that it survives --cleanup and can be found by someone who did not build the vault: `refgenie seek <genome>/provenance`. Each record describes the download it came from. The vault's genome FASTA is kept from the first download of that sequence, so for a later release the record's 'genome' block describes a file with the same sequence, not necessarily the same bytes; the genome's digest is what identifies the sequence.",
+  "required_files": [
+    {
+      "key": "provenance",
+      "description": "provenance.json from a download directory"
+    }
+  ],
+  "required_assets": [],
+  "required_parameters": [],
+  "container": "databio/refgenie",
+  "assets": {
+    "provenance": "{genome}.provenance.json"
+  },
+  "command_list": [
+    "cp {provenance} {asset_outfolder}/{genome}.provenance.json"
+  ]
+}

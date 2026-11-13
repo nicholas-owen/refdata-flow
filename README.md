@@ -124,6 +124,27 @@ Mus_musculus,mouse,,true,mm39;mm,
 >
 > The annotation version is **recorded either way**, pinned or not - see *Annotation release tagging* below.
 
+#### A genome that no provider lists: request it by address
+
+Some reference genomes cannot be found by searching, because they are not in any provider's catalogue: NCBI's GRCh38 "analysis sets", the Broad's `Homo_sapiens_assembly38.fasta` that the GATK resource bundle is built against, a consortium's own release. They are published as a file at an address. Give the row provider `url` and put the address in a `url` column:
+
+```csv
+species,query,provider,annotation,aliases,release,url,annotation_url
+Homo_sapiens,GRCh38_no_alt,url,false,hs38_noalt,,https://ftp.ncbi.nlm.nih.gov/genomes/all/GCA/000/001/405/GCA_000001405.15_GRCh38/seqs_for_alignment_pipelines.ucsc_ids/GCA_000001405.15_GRCh38_no_alt_analysis_set.fna.gz,
+```
+
+Such a row is taken as written. Nothing is searched and nothing is chosen for you:
+
+- **`query` is the genome's name.** With no provider to supply one, the name is yours. It is registered as `<name>_url`, so the example is reachable as `GRCh38_no_alt_url`, `GRCh38_no_alt` and `hs38_noalt`.
+- **An annotation must be given by address too**, in `annotation_url`, as a GTF, GFF or BED file. It is registered as `url_gtf`. Leave `annotation` false to take sequence alone.
+- **A release cannot be pinned.** An address is one file; a newer one is a different address.
+- **The address is restricted** to `http`, `https` or `ftp` and to letters, digits and `. _ ~ / % + = : @ , -`. It is passed to a shell command, so query strings and anything a shell would act on are refused.
+- **A name means one address.** If `GRCh38_no_alt` is already in the vault from one address and a later request gives another, the run stops before downloading and tells you to use a different name. Otherwise the vault would hand back the first file under the second request's name.
+
+This matters most for variant calling. Your Ensembl human genome names its contigs `1`, `2`, `X`. The GATK known-sites files, the ENCODE blacklist and gnomAD all use `chr1`, `chr2`, `chrX`. They match the analysis-set and Broad genomes as they are, and do not match an Ensembl one.
+
+The columns are optional. A request file without them works as before.
+
 > **Three things are checked before anything is downloaded**, and each fails the row with the line number and the reason:
 >
 > - **`annotation=true` on an assembly with no annotation.** The provider search already says whether one is published, so the request stops here instead of after the genome has been fetched.
@@ -168,7 +189,7 @@ bash run_pipeline.sh requests/requests_raw.csv --cleanup
 Two safeguards apply, because deleting downloaded reference data is not always reversible: providers archive and reorganise old releases, so re-fetching the identical files months later is not guaranteed:
 
 - **Nothing is removed unless the ingest is verified.** The FASTA must have been registered, and if you requested annotation, the GTF must have been registered too. A partial ingest leaves the source directory in place and the run exits non-zero.
-- **Provenance survives cleanup.** Before removal, `provenance.json`, genomepy's `README.txt` (source URLs) and, where the provider supplies an assembly accession, `assembly_report.txt` (sequence-name mappings between UCSC / Ensembl / GenBank accessions) are copied to `<outdir>/provenance/<provider>/<species>/<assembly>/`, which is never deleted. The remaining files are the sequence itself and indexes that refgenie regenerates in the vault.
+- **Provenance survives cleanup.** Before removal, `provenance.json`, genomepy's `README.txt` (source URLs) and, where the provider supplies an assembly accession, `assembly_report.txt` (sequence-name mappings between UCSC / Ensembl / GenBank accessions) are copied to `<outdir>/provenance/<provider>/<species>/<assembly>/`, which is never deleted. The remaining files are the sequence itself and indexes that refgenie regenerates in the vault. `provenance.json` and `assembly_report.txt` are also in the vault itself, as the `provenance` and `assembly_report` assets, whether or not you clean up.
 
 Nextflow's own copy of each download stays in `work/` either way, which is what lets a later run resume. It goes when you run `bash run_pipeline.sh --clean`.
 
@@ -263,15 +284,56 @@ The `provider` and `species` directory names are used **exactly as they appear i
 Inside each assembly directory, you will find:
 - The downloaded compressed `.fa.gz` (and `.gtf.gz` if requested).
 - A `README.txt` generated natively by genomepy detailing the source URLs.
-- A custom `provenance.json` recording exactly when the dataset was downloaded and what arguments were used, providing an audit trail.
+- A `provenance.json` describing the download: see *The download record* below.
 
-> **Which variant of the assembly you get.** The pipeline takes genomepy's defaults and does not currently expose a switch for either: sequence is **soft-masked** (repeats in lowercase) where the provider offers a masked file, and for providers that distinguish them it is the **primary assembly** rather than toplevel, so alt haplotypes and patch scaffolds are excluded. For Ensembl human that means `GRCh38.p14` names the assembly correctly while the file itself holds 194 sequences: 25 chromosomes plus unplaced scaffolds, no alts. This matters if you intended alt-aware alignment, or if a tool treats lowercase as masked-out. Neither setting is recorded in `provenance.json`.
+### The download record (`provenance.json`)
+
+Each download writes a record of what was asked for, where it came from, and what arrived. It also goes into the vault, so it outlives the download and can be found by someone who did not build the vault:
+
+```bash
+refgenie seek human/provenance          # the record for the newest annotation release held
+refgenie seek human/provenance:115      # for a particular release
+```
+
+| It records | From |
+|---|---|
+| Species, assembly, provider, the release you pinned (if any) | your request |
+| Source URLs for the genome and the annotation, assembly accession, taxon ID | genomepy's `README.txt`, parsed into fields |
+| What genomepy changed: contigs it removed, how it adjusted the annotation | genomepy's `README.txt` |
+| The masking and alt-contig settings the genome was fetched with | the arguments this pipeline passed |
+| SHA-256 of each delivered file, and of the text inside it | the files |
+| Sequence count and total length; for the annotation, counts by feature type, gene and transcript counts, the contigs and biotypes present | the files |
+| Versions of genomepy, Python, `bgzip` and `samtools`; the pipeline version | the task's environment |
+| When it was retrieved, in UTC | the clock |
+
+Two checksums are kept for each file because they answer different questions. `file_sha256` is the compressed file exactly as stored, and changes if it is recompressed. `content_sha256` is the text inside, and is the one you can check: refgenie stores the genome decompressed, so this must match it.
+
+```bash
+sha256sum "$(refgenie seek human/fasta)"     # equals genome.content_sha256 in the record
+```
+
+Two limits to read the annotation's checksum with:
+
+- **It is the GTF as delivered, not as published.** genomepy removes the header lines and matches contig names to the genome, so the checksum cannot be compared with Ensembl's `CHECKSUMS` or GENCODE's `MD5SUMS`. It identifies what is in your vault and lets two vaults be compared.
+- **A UCSC annotation has no published file at all.** It is generated at download time from UCSC's database tables. The record's retrieval time and table date are the only version it has.
+
+The counts are there because a checksum that differs tells you nothing else. Two annotations of the same genome with different gene and transcript counts tell you how they differ.
+
+If part of the record cannot be collected, the download still succeeds and the missing part is named under `provenance_errors`.
+
+`<outdir>/provenance/index.tsv` is a plain-text table of the whole vault, one line per record: each genome's digest and aliases, its provider, assembly, annotation release and accession, when it was retrieved, the two content checksums, and every asset and tag it holds. It is rewritten from the vault on every run, so it answers "what is in here?" without refgenie:
+
+```bash
+column -t -s $'\t' /path/to/outdir/provenance/index.tsv | less -S
+```
+
+> **Which variant of the assembly you get.** The pipeline takes genomepy's defaults and does not currently expose a switch for either: sequence is **soft-masked** (repeats in lowercase) where the provider offers a masked file, and for providers that distinguish them it is the **primary assembly** rather than toplevel, so alt haplotypes and patch scaffolds are excluded. For Ensembl human that means `GRCh38.p14` names the assembly correctly while the file itself holds 194 sequences: 25 chromosomes plus unplaced scaffolds, no alts. This matters if you intended alt-aware alignment, or if a tool treats lowercase as masked-out. Both settings are recorded in `provenance.json`, under `install_arguments`, with the number of sequences that resulted.
 
 ## refgenie vault layout
 
 refgenie organises the genomes under your `--outdir` into a vault keyed by a **sequence-collection digest**, computed over each record's name, length and sequence in file order. Two requests that resolve to the same sequences share a single physical copy.
 
-> **Scope of the digest.** It is computed over the genome FASTA only - the annotation (GTF) is not currently digested, and neither artifact is checksummed at download time.
+> **Scope of the digest.** It is computed over the genome FASTA only. The annotation has no digest of that kind; it is identified by its release tag and by the SHA-256 in the download record (see *The download record*).
 >
 > The digest is *related to* the GA4GH standards without conforming to them, in two independent ways.
 >
@@ -429,7 +491,7 @@ The scheduler request format (memory per core, node-local scratch) is the same a
 
 ### Benefits for HPC Research
 1. **Zero Duplication:** If two researchers run an analysis (one explicitly asking for `GRCh38.p14`, the other asking for `grch38`), they are both funnelled through symlinks to the *exact same physical file* in the `data/` vault, rather than each maintaining a private copy. The alias layer is what makes that work: one download stays reachable under every name people naturally reach for, so nobody re-downloads a genome simply because their preferred name is not in the vault.
-2. **Sequence-level Provenance:** Researchers can query refgenie to get the sequence digest (e.g., `2230c53b...`), which identifies the exact set of DNA sequences used, so a later run can be checked against it. Note the limits described above - the digest covers the FASTA, not the annotation, and does not by itself record which upstream release the data came from.
+2. **Sequence-level Provenance:** Researchers can query refgenie to get the sequence digest (e.g., `2230c53b...`), which identifies the exact set of DNA sequences used, so a later run can be checked against it. The digest covers the FASTA, not the annotation, and does not by itself say which upstream release the data came from; the annotation's release tag and the download record beside it do.
 
 ### Using the Vault (querying with refgenie)
 
@@ -454,7 +516,7 @@ Add the `export` line to your `~/.bashrc` to make it permanent (see `walkthrough
 **Common queries:**
 - `refgenie list` - list all genomes and their aliases (`human`, `mm39`, `yeast`, …).
 - `refgenie seek GRCh38.p14/fasta` (or `human/fasta`) - print the absolute path to the FASTA in the vault.
-- `refgenie seek GRCm39/ensembl_gtf` - print the path to an annotation. **The asset name reflects the provider the annotation actually came from**, so use the one matching your request: `ensembl_gtf`, `gencode_gtf`, `ucsc_gtf` or `ncbi_gtf`.
+- `refgenie seek GRCm39/ensembl_gtf` - print the path to an annotation. **The asset name reflects the provider the annotation actually came from**, so use the one matching your request: `ensembl_gtf`, `gencode_gtf`, `ucsc_gtf` or `ncbi_gtf`, or `url_gtf` for an annotation you gave by address.
 
 > **Annotation asset naming.** Earlier versions filed every non-Ensembl annotation under `gencode_gtf`, which asserted a GENCODE origin the data did not have - GENCODE publishes human and mouse only, so a UCSC yeast annotation was recorded as GENCODE. Annotations are now registered under a recipe named for their real source. `gencode_gtf` is refgenie's built-in, used unchanged. `ucsc_gtf`, `ncbi_gtf` and `ensembl_gtf` are shipped in `recipes/` and supplied via `refgenie build --recipe`.
 
@@ -510,6 +572,9 @@ Two operational notes:
   - **Failed downloads are retried**, twice by default, with at most four downloads running at once. Previously the first failure ended the run and killed every other download in progress. See *Failed downloads are retried*.
   - **Cataloguing moved into Nextflow.** The wrapper's third step is now the `REGISTER` process, which starts when every download has finished and reads each one as a task input instead of from the copy published under `--outdir`. `--cleanup` therefore no longer publishes sources and then deletes them; it does not publish them. `bin/update_refgenie.py` can still be run by hand against an existing download tree, and gains `--source` and `--manifest`.
   - **Every genome has a sequence dictionary**, beside its FASTA under every alias, so `refgenie seek <genome>/fasta` is usable as a GATK or Picard reference directly. It is a fourth file in the `fasta` asset (`recipes/fasta.json`), and genomes already in a vault gain one on their next ingest. See *Sequence dictionary*.
+  - **A genome can be requested by address** (provider `url`), for the ones no provider's catalogue lists: analysis-set genomes, the Broad's assembly38. The row names the genome and gives the file's address; an annotation is given by address too. See *A genome that no provider lists*.
+  - **The download record says what was downloaded.** `provenance.json` gains source URLs, the assembly accession and taxon, the masking and alt-contig settings, SHA-256 checksums of each file and of its contents, a summary of the annotation, tool versions and a UTC timestamp. It used to hold the four request fields and a local-time stamp. See *The download record*.
+  - **The record lives in the vault**, as the `provenance` asset, tagged by annotation release and reachable by every alias. The NCBI assembly report, which maps each sequence's name between naming schemes, is kept beside it as `assembly_report`. `<outdir>/provenance/index.tsv` lists the whole vault as a plain table.
   - **Every run derives a transcriptome** for each annotated genome (`--no-txome` to skip). Derived from the vault's own genome and GTF with gffread, registered as `fasta_txome` and tagged with the annotation release, with both inputs recorded as parents. Never a provider's cDNA download. See *Transcriptome*.
   - **An `sge` profile (`--profile sge`)** for the UCL clusters, ported from rnaseq-flow. Only the transcriptome derivation is submitted; downloads and registration stay on the launching machine. See *Running on an SGE cluster*.
   - **A preflight asks the vault before downloading.** Requests the vault already satisfies are skipped, so re-runs no longer depend on Nextflow's `work/` cache surviving. An unpinned annotation is fetched again when the provider publishes a newer release, and gains a tag. `--refetch` downloads everything regardless. See *Genomes already in the vault are not downloaded again*.

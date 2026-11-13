@@ -148,8 +148,8 @@ class ToyVault(unittest.TestCase):
                          {"toyAsm_gencode", "mouse_gc"})
 
     def test_04_each_annotation_is_filed_under_its_own_genome(self):
-        self.assertEqual(set(self.genome("toyAsm_ensembl")["assets"]), {"fasta", "ensembl_gtf"})
-        self.assertEqual(set(self.genome("toyAsm_gencode")["assets"]), {"fasta", "gencode_gtf"})
+        self.assertEqual(set(self.genome("toyAsm_ensembl")["assets"]), {"fasta", "ensembl_gtf", "provenance"})
+        self.assertEqual(set(self.genome("toyAsm_gencode")["assets"]), {"fasta", "gencode_gtf", "provenance"})
 
     def test_05_annotation_contigs_match_the_genome_they_are_filed_under(self):
         # The regression this suite exists for: a chr-prefixed GENCODE GTF used to
@@ -203,6 +203,47 @@ class ToyVault(unittest.TestCase):
                 # Names the FASTA beside it; never a path into this machine.
                 self.assertNotIn("/", record["UR"])
 
+    # -- the download's record ---------------------------------------------------
+
+    def test_11_each_download_record_is_in_the_vault_under_its_release(self):
+        asset = self.genome("toyAsm_ensembl")["assets"]["provenance"]
+        self.assertEqual(set(asset["tags"]), {"110", "116"})
+        self.assertEqual(str(asset["default_tag"]), "116")
+        # Reachable by any alias, and named for it.
+        for alias, release in (("mouse_ens", "116"), ("toyAsm", "116"), ("mouse_gc", "M33")):
+            path = self.seek(f"{alias}/provenance")
+            self.assertEqual(os.path.basename(path), f"{alias}.provenance.json")
+            with open(path) as f:
+                self.assertEqual(json.load(f)["annotation_release"], release)
+        with open(self.seek("mouse_ens/provenance:110")) as f:
+            self.assertEqual(json.load(f)["annotation_release"], "110")
+
+    def test_12_vault_fasta_is_byte_for_byte_the_downloads_decompressed_content(self):
+        # This is what makes the record's genome.content_sha256 checkable: refgenie
+        # stores the FASTA decompressed, so `sha256sum` of the vault's file must
+        # equal the hash of the text inside the downloaded .fa.gz.
+        for alias, prefix in (("toyAsm_ensembl", ""), ("toyAsm_gencode", "chr")):
+            text = f">{prefix}1\n" + "ACGT" * 10 + f"\n>{prefix}2\n" + "TTGGCCAA" * 5 + "\n"
+            with open(self.seek(f"{alias}/fasta"), "rb") as f:
+                self.assertEqual(hashlib.sha256(f.read()).hexdigest(),
+                                 hashlib.sha256(text.encode()).hexdigest(), alias)
+
+    def test_13_index_has_a_line_for_every_download_record(self):
+        with open(os.path.join(self.outdir, "provenance", "index.tsv"), newline="") as f:
+            rows = list(csv.DictReader(f, delimiter="\t"))
+        self.assertEqual(sorted(r["annotation_release"] for r in rows), ["110", "116", "M33"])
+        self.assertEqual({r["digest"] for r in rows}, set(self.genomes()))
+        for row in rows:
+            aliases = row["aliases"].split(";")
+            if row["annotation_release"] == "M33":
+                self.assertEqual(sorted(aliases), ["mouse_gc", "toyAsm_gencode"])
+                self.assertIn("gencode_gtf:M33", row["assets"].split(";"))
+            else:
+                self.assertIn("mouse_ens", aliases)
+                # Every tag the genome holds, on each of its lines.
+                self.assertIn("ensembl_gtf:110,116", row["assets"].split(";"))
+            self.assertIn("fasta:default", row["assets"].split(";"))
+
     # -- a second ingest, with cleanup -----------------------------------------
     # Named to sort after everything above: it removes the download directories.
 
@@ -231,6 +272,14 @@ class ToyVault(unittest.TestCase):
         # The download directories are gone, so only the alias fallback runs.
         result = self.ingest()
         self.assertEqual(result.returncode, 0, result.stdout[-3000:])
+
+    def test_92_download_records_outlive_the_downloads(self):
+        # In the vault itself now, not only in the side directory --cleanup fills.
+        for registry_path in ("mouse_ens/provenance", "mouse_ens/provenance:110",
+                              "mouse_gc/provenance"):
+            self.assertTrue(os.path.isfile(self.seek(registry_path)), registry_path)
+        with open(os.path.join(self.outdir, "provenance", "index.tsv"), newline="") as f:
+            self.assertEqual(len(list(csv.DictReader(f, delimiter="\t"))), 3)
 
 
 @unittest.skipIf(missing_requirement(), missing_requirement())
@@ -547,8 +596,8 @@ class StagedSources(unittest.TestCase):
 
         by_name = {alias: genome for genome in self.genomes().values()
                    for alias in genome["aliases"]}
-        self.assertEqual(set(by_name["toyAsm_ensembl"]["assets"]), {"fasta", "ensembl_gtf"})
-        self.assertEqual(set(by_name["toyAsm_gencode"]["assets"]), {"fasta", "gencode_gtf"})
+        self.assertEqual(set(by_name["toyAsm_ensembl"]["assets"]), {"fasta", "ensembl_gtf", "provenance"})
+        self.assertEqual(set(by_name["toyAsm_gencode"]["assets"]), {"fasta", "gencode_gtf", "provenance"})
 
         with open(manifest, newline="") as f:
             rows = list(csv.DictReader(f, delimiter="\t"))
@@ -570,6 +619,23 @@ class StagedSources(unittest.TestCase):
                 self.assertEqual(f.readline().strip(), ">" + contig)
             with gzip.open(row["gtf"], "rt") as f:
                 self.assertEqual(f.readline().split("\t")[0], contig)
+
+    def test_assembly_report_is_kept_as_an_asset_where_the_download_has_one(self):
+        report = "# Assembly name:  toyAsm\n1\tassembled-molecule\t1\tChromosome\tCM1.1\t=\tNC_1.1\n"
+        with open(os.path.join(self.ensembl, "assembly_report.txt"), "w") as f:
+            f.write(report)
+        result = self.ingest("--source", f"ensembl/toyAsm@={self.ensembl}",
+                             "--source", f"gencode/toyAsm@={self.gencode}")
+        self.assertEqual(result.returncode, 0, result.stdout[-3000:])
+        by_name = {alias: genome for genome in self.genomes().values()
+                   for alias in genome["aliases"]}
+        self.assertIn("assembly_report", by_name["toyAsm_ensembl"]["assets"])
+        # Not invented for a download that came without one.
+        self.assertNotIn("assembly_report", by_name["toyAsm_gencode"]["assets"])
+        stored = os.path.join(self.outdir, "alias", "mouse_ens", "assembly_report", "default",
+                              "mouse_ens.assembly_report.txt")
+        with open(stored) as f:
+            self.assertEqual(f.read(), report)
 
     def test_manifest_leaves_annotation_blank_when_none_was_requested(self):
         with open(self.resolved, "w", newline="") as f:

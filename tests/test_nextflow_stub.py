@@ -165,8 +165,8 @@ class StubRun(NextflowTestCase):
 
         self.assertEqual(len(genomes), 3)
         self.assertIsNot(by_name["toyAsm_ensembl"], by_name["toyAsm_gencode"])
-        self.assertEqual(set(by_name["toyAsm_gencode"]["assets"]), {"fasta", "gencode_gtf"})
-        self.assertEqual(set(by_name["seqOnly_ncbi"]["assets"]), {"fasta"})
+        self.assertEqual(set(by_name["toyAsm_gencode"]["assets"]), {"fasta", "gencode_gtf", "provenance"})
+        self.assertEqual(set(by_name["seqOnly_ncbi"]["assets"]), {"fasta", "provenance"})
         # Both Ensembl rows reached the vault, each under its own tag.
         self.assertEqual(set(by_name["toyAsm_ensembl"]["assets"]["ensembl_gtf"]["tags"]),
                          {"999", "110"})
@@ -197,8 +197,8 @@ class Registration(NextflowTestCase):
         vault = load_vault(outdir)
         self.assertEqual(len({id(genome) for genome in vault.values()}), 3)
         self.assertIsNot(vault["toyAsm_ensembl"], vault["toyAsm_gencode"])
-        self.assertEqual(set(vault["toyAsm_gencode"]["assets"]), {"fasta", "gencode_gtf"})
-        self.assertEqual(set(vault["seqOnly_ncbi"]["assets"]), {"fasta"})
+        self.assertEqual(set(vault["toyAsm_gencode"]["assets"]), {"fasta", "gencode_gtf", "provenance"})
+        self.assertEqual(set(vault["seqOnly_ncbi"]["assets"]), {"fasta", "provenance"})
         # The pinned and the unpinned Ensembl download share an assembly name and a
         # directory name. Both tags present means each was matched to its own row.
         self.assertEqual(set(vault["toyAsm_ensembl"]["assets"]["ensembl_gtf"]["tags"]),
@@ -280,6 +280,25 @@ class Registration(NextflowTestCase):
         # Applied although nothing was downloaded for that row - and not lost when
         # the pinned row, which shares its genome, was ingested after it.
         self.assertIn("added_later", vault["toyAsm_ensembl"]["aliases"])
+
+    def test_05d_genome_requested_by_address_is_fetched_and_registered(self):
+        # Under -stub nothing is fetched from the address; what is tested is that
+        # such a row travels the whole workflow like any other: validated,
+        # published under its provider, and filed under its own name.
+        outdir = os.path.join(self.work, "byurl.out")
+        requests = self.write_requests(
+            "byurl.csv", HEADER.rstrip("\n") + ",url,annotation_url\n"
+            + "Homo_sapiens,noalt,URL,TRUE,noalt,,hs_noalt,"
+              "https://example.org/pub/noalt.fna.gz,https://example.org/pub/noalt.gtf.gz\n"
+            + "Foo_bar,seqOnly,NCBI,false,seqOnly,,,,\n")
+        result = self.nextflow(requests, outdir, register=True)
+        self.assertEqual(result.returncode, 0, result.stdout[-3000:])
+        self.assertTrue(os.path.isfile(
+            os.path.join(outdir, "URL", "Homo_sapiens", "noalt", "noalt.fa.gz")))
+        vault = load_vault(outdir)
+        self.assertIs(vault["noalt_url"], vault["hs_noalt"])
+        # An annotation given by address is filed as exactly that.
+        self.assertEqual(set(vault["noalt_url"]["assets"]), {"fasta", "url_gtf", "provenance"})
 
     def test_06_cleanup_false_on_the_command_line_still_keeps_sources(self):
         # A command-line value arrives as text, and the text 'false' is true to
@@ -549,6 +568,23 @@ class RequestValidation(NextflowTestCase):
                                 + "Mus_musculus,toyAsm,Ensembl,TRUE,a,116,\n"),
             os.path.join(self.work, "releases.out"))
         self.assertEqual(result.returncode, 0, result.stdout[-2000:])
+
+    URL_HEADER = HEADER.rstrip("\n") + ",url,annotation_url\n"
+
+    def test_address_with_shell_characters_is_refused(self):
+        output = self.rejected("badurl.csv", self.URL_HEADER
+                               + "Homo_sapiens,noalt,URL,false,noalt,,,https://example.org/a.fa.gz;id,\n")
+        self.assertIn("Unusable url", output)
+
+    def test_genome_by_address_without_an_address_is_refused(self):
+        output = self.rejected("nourl.csv", self.URL_HEADER
+                               + "Homo_sapiens,noalt,URL,false,noalt,,,,\n")
+        self.assertIn("needs an address in the url column", output)
+
+    def test_address_on_a_named_provider_is_refused(self):
+        output = self.rejected("strayurl.csv", self.URL_HEADER
+                               + "Mus_musculus,toyAsm,Ensembl,false,a,,,https://example.org/a.fa.gz,\n")
+        self.assertIn("only used with provider 'url'", output)
 
     def test_non_numeric_release_is_refused(self):
         output = self.rejected("release.csv", HEADER

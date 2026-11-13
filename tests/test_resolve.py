@@ -295,6 +295,95 @@ class SearchScope(ResolverTestCase):
         self.assertEqual([r["provider"] for r in rows], ["GENCODE"])
 
 
+class GenomeByAddress(ResolverTestCase):
+    """Provider 'url': the row is the request, and nothing is searched."""
+
+    HEADER = "species,query,provider,annotation,aliases,release,url,annotation_url"
+    FASTA = "https://ftp.ncbi.nlm.nih.gov/genomes/all/GCA/000/GRCh38_no_alt_analysis_set.fna.gz"
+    GTF = "https://ftp.ebi.ac.uk/pub/databases/gencode/release_49/gencode.v49.annotation.gtf.gz"
+
+    def by_address(self, *rows):
+        return self.resolve(list(rows), header=self.HEADER)
+
+    def test_row_is_taken_as_written_without_a_search(self):
+        code, rows, err = self.by_address(
+            f"Homo_sapiens,GRCh38_no_alt,url,false,hs_noalt,,{self.FASTA},")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(self.searched, [])
+        row = rows[0]
+        # The query is the genome's name; the provider is spelled as genomepy does.
+        self.assertEqual((row["assembly"], row["provider"]), ("GRCh38_no_alt", "URL"))
+        self.assertEqual((row["url"], row["annotation_url"]), (self.FASTA, ""))
+        self.assertEqual(row["aliases"], "hs_noalt")
+
+    def test_annotation_is_given_by_address_too(self):
+        code, rows, err = self.by_address(
+            f"Homo_sapiens,GRCh38_no_alt,url,TRUE,,,{self.FASTA},{self.GTF}")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(rows[0]["annotation_url"], self.GTF)
+
+    def test_annotation_without_an_address_is_refused(self):
+        code, rows, err = self.by_address(
+            f"Homo_sapiens,GRCh38_no_alt,url,TRUE,,,{self.FASTA},")
+        self.assertEqual(code, resolve.EXIT_UNRESOLVED)
+        self.assertIn("annotation_url", err)
+
+    def test_annotation_address_must_be_a_format_genomepy_takes(self):
+        code, _, err = self.by_address(
+            f"Homo_sapiens,GRCh38_no_alt,url,TRUE,,,{self.FASTA},https://example.org/genes.txt")
+        self.assertEqual(code, resolve.EXIT_UNRESOLVED)
+        self.assertIn("not a GTF, GFF or BED", err)
+
+    def test_missing_address_is_refused(self):
+        code, _, err = self.by_address("Homo_sapiens,GRCh38_no_alt,url,false,,,,")
+        self.assertEqual(code, resolve.EXIT_UNRESOLVED)
+        self.assertIn("url column is empty", err)
+
+    def test_address_with_shell_characters_is_refused(self):
+        # The address reaches a shell command. Each of these would do something
+        # there other than name a file.
+        for address in ("https://example.org/a.fa.gz;rm", "https://example.org/$(id).fa.gz",
+                        "https://example.org/a.fa.gz?x=1&y=2", "file:///etc/passwd",
+                        "https://example.org/a b.fa.gz"):
+            code, rows, err = self.by_address(
+                f"Homo_sapiens,GRCh38_no_alt,url,false,,,{address},")
+            self.assertEqual(code, resolve.EXIT_UNRESOLVED, address)
+            self.assertEqual(rows, [], address)
+            self.assertIn("cannot be used", err, address)
+
+    def test_name_that_could_not_be_a_directory_is_refused(self):
+        code, _, err = self.by_address(f"Homo_sapiens,GRCh38/no alt,url,false,,,{self.FASTA},")
+        self.assertEqual(code, resolve.EXIT_UNRESOLVED)
+        self.assertIn("the name the genome will be known by", err)
+
+    def test_release_cannot_be_pinned(self):
+        code, _, err = self.by_address(
+            f"Homo_sapiens,GRCh38_no_alt,url,false,,116,{self.FASTA},")
+        self.assertEqual(code, resolve.EXIT_UNRESOLVED)
+        self.assertIn("cannot be pinned", err)
+
+    def test_address_on_a_row_for_another_provider_is_refused_not_ignored(self):
+        code, rows, err = self.by_address(
+            f"Homo_sapiens,GRCh38,ensembl,TRUE,human,,{self.FASTA},")
+        self.assertEqual(code, resolve.EXIT_UNRESOLVED)
+        self.assertEqual(rows, [])
+        self.assertEqual(self.searched, [])
+        self.assertIn("only used with provider 'url'", err)
+
+    def test_same_name_twice_is_a_duplicate(self):
+        code, rows, err = self.by_address(
+            f"Homo_sapiens,GRCh38_no_alt,url,false,a,,{self.FASTA},",
+            f"Homo_sapiens,GRCh38_no_alt,url,false,b,,{self.FASTA}2,")
+        self.assertEqual(code, resolve.EXIT_UNRESOLVED)
+        self.assertEqual(len(rows), 1)
+        self.assertIn("already requests", err)
+
+    def test_rows_for_other_providers_carry_empty_address_columns(self):
+        code, rows, err = self.by_address("Homo_sapiens,GRCh38,ensembl,TRUE,human,,,")
+        self.assertEqual(code, 0, err)
+        self.assertEqual((rows[0]["url"], rows[0]["annotation_url"]), ("", ""))
+
+
 class LogStyling(unittest.TestCase):
     RED = "\x1b[31m"
 

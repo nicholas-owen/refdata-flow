@@ -185,16 +185,21 @@ class CurrentRelease(unittest.TestCase):
 
 class CommandLine(VaultTestCase):
     def run_preflight(self, rows, *extra):
+        """Run main(). Returns (keys written, report); the exit code is self.exit_code."""
         resolved = os.path.join(self.outdir, "requests_resolved.csv")
         with open(resolved, "w", newline="") as f:
-            f.write("species,assembly,provider,annotation,query,release,aliases\n"
+            f.write("species,assembly,provider,annotation,query,release,aliases,url,annotation_url\n"
                     + "\n".join(rows) + "\n")
         keys_file = os.path.join(self.outdir, "fetch_keys.txt")
-        out = io.StringIO()
+        out, err = io.StringIO(), io.StringIO()
         argv = ["preflight.py", resolved, self.outdir, "--fetch-keys", keys_file, *extra]
-        with mock.patch.object(sys, "argv", argv), redirect_stdout(out), \
-                redirect_stderr(io.StringIO()):
-            preflight.main()
+        self.exit_code = 0
+        with mock.patch.object(sys, "argv", argv), redirect_stdout(out), redirect_stderr(err):
+            try:
+                preflight.main()
+            except SystemExit as e:
+                self.exit_code = e.code or 0
+        self.stderr = err.getvalue()
         with open(keys_file) as f:
             return f.read().splitlines(), out.getvalue()
 
@@ -222,6 +227,100 @@ class CommandLine(VaultTestCase):
         keys, report = self.run_preflight([], "--no-release-check")
         self.assertEqual(keys, [])
         self.assertIn("0 to download", report)
+
+
+class GenomeByAddress(CommandLine):
+    """
+    A genome requested by address is whatever file is at that address. The vault
+    here holds 'noalt' from OLD; its provenance record says so.
+    """
+
+    OLD = "https://example.org/2014/GRCh38_no_alt.fna.gz"
+    NEW = "https://example.org/2016/GRCh38_no_alt_plus_decoy.fna.gz"
+    DIGEST = "u" * 48
+
+    # CommandLine's own tests would run again here, against a vault they were not
+    # written for. Only the helper is wanted.
+    test_writes_the_key_of_each_request_to_fetch_and_reports_every_row = None
+    test_a_failure_while_checking_a_row_fetches_it = None
+    test_no_requests_writes_an_empty_file = None
+
+    def setUp(self):
+        super().setUp()
+        self.config["genomes"][self.DIGEST] = {
+            "aliases": ["noalt_url", "noalt"],
+            "assets": {
+                "fasta": fasta_asset("u.dict"),
+                "url_gtf": {"default_tag": "20240101", "tags": {"20240101": {}}},
+                "provenance": {"default_tag": "20240101", "tags": {"20240101": {
+                    "seek_keys": {"provenance": "u.provenance.json"}}}},
+            },
+        }
+        with open(self.config_file, "w") as f:
+            yaml.dump(self.config, f)
+        data = os.path.join(self.outdir, "data", self.DIGEST)
+        for directory in ("fasta/default", "url_gtf/20240101", "provenance/20240101"):
+            os.makedirs(os.path.join(data, directory))
+        with open(os.path.join(data, "fasta", "default", "u.dict"), "w") as f:
+            f.write("@HD\tVN:1.0\n")
+        self.record = os.path.join(data, "provenance", "20240101", "u.provenance.json")
+        self.write_record({"url_requested": self.OLD})
+
+    def write_record(self, record):
+        import json
+        with open(self.record, "w") as f:
+            json.dump(record, f)
+
+    def row(self, url, name="noalt"):
+        return {"assembly": name, "provider": "URL", "annotation": "TRUE", "release": "",
+                "url": url}
+
+    def test_held_genome_is_skipped_without_asking_anyone_for_a_release(self):
+        fetch, reason, asked = self.assess("noalt", "URL", current="20990101")
+        self.assertFalse(fetch)
+        self.assertEqual(asked, [])
+        self.assertIn("from the address given", reason)
+
+    def test_same_name_and_same_address_is_no_conflict(self):
+        self.assertIsNone(preflight.address_conflict(self.row(self.OLD), self.config,
+                                                     self.config_file))
+
+    def test_same_name_from_another_address_is_a_conflict(self):
+        conflict = preflight.address_conflict(self.row(self.NEW), self.config, self.config_file)
+        self.assertIn(self.OLD, conflict)
+        self.assertIn(self.NEW, conflict)
+        self.assertIn("different name", conflict)
+
+    def test_new_name_is_no_conflict_whatever_its_address(self):
+        self.assertIsNone(preflight.address_conflict(self.row(self.NEW, name="noalt_decoy"),
+                                                     self.config, self.config_file))
+
+    def test_genome_ingested_before_addresses_were_recorded_is_let_through(self):
+        self.write_record({"assembly": "noalt"})
+        self.assertIsNone(preflight.address_conflict(self.row(self.NEW), self.config,
+                                                     self.config_file))
+
+    def test_named_provider_is_never_a_conflict(self):
+        row = {"assembly": "GRCm39", "provider": "Ensembl", "url": ""}
+        self.assertIsNone(preflight.address_conflict(row, self.config, self.config_file))
+
+    def test_conflict_stops_the_run_before_any_download(self):
+        keys, report = self.run_preflight([
+            f"Homo_sapiens,noalt,URL,false,noalt,,,{self.NEW},",
+            "Saccharomyces_cerevisiae,sacCer3,UCSC,false,sacCer3,,yeast,,",
+        ], "--no-release-check")
+        self.assertEqual(self.exit_code, 1)
+        self.assertIn("  STOP   noalt from URL", report)
+        self.assertIn("Nothing was downloaded", self.stderr)
+        # Neither skipped nor queued: it is not in the keys to fetch.
+        self.assertEqual(keys, ["ucsc/sacCer3@"])
+
+    def test_matching_address_runs_normally(self):
+        keys, report = self.run_preflight(
+            [f"Homo_sapiens,noalt,URL,false,noalt,,,{self.OLD},"], "--no-release-check")
+        self.assertEqual(self.exit_code, 0)
+        self.assertEqual(keys, [])
+        self.assertIn("  SKIP   noalt from URL", report)
 
 
 if __name__ == "__main__":

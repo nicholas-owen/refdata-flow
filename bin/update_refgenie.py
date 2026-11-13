@@ -11,6 +11,7 @@ import logging
 import re
 import subprocess
 import shutil
+import tempfile
 
 import yaml
 
@@ -83,6 +84,9 @@ ANNOTATION_RECIPES = {
     "gencode": "gencode_gtf",
     "ucsc":    "ucsc_gtf",
     "ncbi":    "ncbi_gtf",
+    # An annotation given by address, for a genome given by address. No provider
+    # stands behind it, and the asset name says that and no more.
+    "url":     "url_gtf",
 }
 
 # Recipes refgenie already knows by name; anything else is supplied as a file from
@@ -787,6 +791,195 @@ def relink_aliases(config_file, assembly, logger):
 # Per-assembly processing
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# The download's record, in the vault
+# ---------------------------------------------------------------------------
+
+def build_passthrough(refgenie_bin, config_file, vault_name, asset, tag, source_file,
+                      logger, force=False):
+    """
+    Build a one-file asset from recipes/<asset>.json. Returns a problem, or None.
+
+    For the small files that describe a download rather than being one. The asset
+    is built once and then left: `refgenie build` skips a tag that exists, which
+    is right, because the vault's FASTA and GTF are also kept from the download
+    that first supplied them, and a record should describe what is there. `force`
+    is for the one case where the caller has just replaced what is there.
+
+    The file is checked on disk afterwards. A skipped build still lists its seek
+    keys in the config (see fasta_has_dictionary), so the config alone cannot say
+    the asset exists; if the file is missing, the build is run again in earnest.
+    """
+    target = f"{vault_name}/{asset}:{tag}"
+    recipe = os.path.join(RECIPES_DIR, f"{asset}.json")
+    command = [
+        sys.executable, refgenie_bin, "build", target,
+        "--files", f"{asset}={os.path.abspath(source_file)}",
+        "--recipe", os.path.abspath(recipe),
+        "-c", config_file,
+    ]
+    previous_default = current_default_tag(config_file, vault_name, asset)
+
+    def on_disk():
+        with open(config_file, "r") as f:
+            config = yaml.safe_load(f) or {}
+        for digest, data in (config.get("genomes") or {}).items():
+            if vault_name in ((data or {}).get("aliases") or []):
+                return bool(asset_file(config, config_file, digest, asset, tag, asset))
+        return False
+
+    try:
+        subprocess.run(command + (["-N"] if force else []), check=True)
+        if not on_disk():
+            subprocess.run(command + ["-N"], check=True)
+    except subprocess.CalledProcessError as e:
+        logger.error("Could not build '%s': %s", target, e)
+        return f"'{target}' was not built ({e})"
+    if not on_disk():
+        logger.error("'%s' is listed in the config but its file is not in the vault", target)
+        return f"'{target}' is not in the vault after building"
+
+    if previous_default not in (None, tag) and should_become_default(previous_default, tag):
+        try:
+            subprocess.run([sys.executable, refgenie_bin, "tag", target, "--default",
+                            "-c", config_file], check=True)
+        except subprocess.CalledProcessError as e:
+            logger.warning("Built '%s' but could not make it the default tag: %s", target, e)
+    return None
+
+
+def register_download_record(asm_dir, vault_name, assembly, refgenie_bin, config_file,
+                             logger, force=False):
+    """
+    File the download's own record in the vault, beside what it describes.
+
+    Two assets, both passthroughs of files the download directory already holds:
+
+      provenance       provenance.json. Tagged with the annotation release the
+                       download carried, or 'default' for sequence alone.
+      assembly_report  assembly_report.txt, where genomepy could fetch one: the
+                       table of each sequence's name in every naming scheme.
+
+    Until now these reached only <outdir>/provenance/<provider>/<species>/..., a
+    path built from the request's own spelling, with no route to it from a digest
+    and nothing in `refgenie list` to say it was there - and only when --cleanup
+    ran. In the vault they are keyed by digest, linked under every alias, and
+    found with `refgenie seek <genome>/provenance`.
+
+    A failure here is reported as a problem. The genome is in the vault either
+    way, but a reference manager that quietly drops its own records is the thing
+    this pipeline exists not to be.
+    """
+    problems = []
+
+    record = os.path.join(asm_dir, "provenance.json")
+    if os.path.isfile(record):
+        release, _kind = read_annotation_release(asm_dir)
+        problem = build_passthrough(refgenie_bin, config_file, vault_name, "provenance",
+                                    release or "default", record, logger, force)
+        if problem:
+            problems.append(f"{assembly}: {problem}")
+    else:
+        logger.warning("No provenance.json in '%s'; '%s' has no download record in the "
+                       "vault.", asm_dir, vault_name)
+
+    report = os.path.join(asm_dir, "assembly_report.txt")
+    if os.path.isfile(report) and os.path.getsize(report) > 0:
+        problem = build_passthrough(refgenie_bin, config_file, vault_name, "assembly_report",
+                                    "default", report, logger, force)
+        if problem:
+            problems.append(f"{assembly}: {problem}")
+
+    return problems
+
+
+INDEX_FIELDS = [
+    "digest", "aliases", "provider", "species", "assembly", "annotation_release",
+    "assembly_accession", "mask", "retrieved_utc",
+    "genome_content_sha256", "annotation_content_sha256", "assets",
+]
+
+
+def write_vault_index(outdir, config_file, logger):
+    """
+    Write <outdir>/provenance/index.tsv: what is in the vault, one line per record.
+
+    The question asked most often of a shared vault is not "tell me about this
+    digest" but "what is in here?", and the only answer so far was to parse the
+    config's YAML. This is a plain table for someone with grep and no refgenie:
+    each genome, the names it goes by, where and when it came from, the checksums
+    of what was delivered, and every asset and tag it holds.
+
+    One line per download record; a genome ingested before records were kept in
+    the vault gets a single line with those columns empty.
+
+    Rewritten in full on every run from the vault itself, never appended to. An
+    appended log would drift from the vault the first time anything was removed
+    or rebuilt by hand, and then it would be a second, wrong, source of truth.
+    """
+    with open(config_file, "r") as f:
+        config = yaml.safe_load(f) or {}
+
+    rows = []
+    for digest, data in sorted((config.get("genomes") or {}).items()):
+        data = data or {}
+        assets = []
+        for asset in sorted(data.get("assets") or {}):
+            tags = sorted(asset_tags_on_disk(config, config_file, digest, asset))
+            if tags:
+                assets.append(f"{asset}:{','.join(tags)}")
+        base = {
+            "digest": digest,
+            "aliases": ";".join(sorted(data.get("aliases") or [])),
+            "assets": ";".join(assets),
+        }
+        records = []
+        for tag in sorted(asset_tags_on_disk(config, config_file, digest, "provenance")):
+            path = asset_file(config, config_file, digest, "provenance", tag, "provenance")
+            try:
+                with open(path) as fh:
+                    records.append(json.load(fh))
+            except (OSError, ValueError):
+                continue
+        if not records:
+            rows.append(base)
+        for record in records:
+            rows.append(dict(
+                base,
+                provider=record.get("provider", ""),
+                species=record.get("species", ""),
+                assembly=record.get("assembly", ""),
+                annotation_release=record.get("annotation_release", ""),
+                assembly_accession=record.get("assembly_accession", ""),
+                mask=(record.get("install_arguments") or {}).get("mask", ""),
+                retrieved_utc=record.get("retrieved_utc", ""),
+                genome_content_sha256=(record.get("genome") or {}).get("content_sha256", ""),
+                annotation_content_sha256=(record.get("annotation") or {}).get(
+                    "content_sha256", ""),
+            ))
+
+    directory = os.path.join(outdir, "provenance")
+    os.makedirs(directory, exist_ok=True)
+    # Written beside its destination and moved into place, so a reader never sees
+    # half a table.
+    fd, tmp_path = tempfile.mkstemp(dir=directory, prefix=".index-", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=INDEX_FIELDS, delimiter="\t",
+                                    restval="")
+            writer.writeheader()
+            writer.writerows(rows)
+        os.replace(tmp_path, os.path.join(directory, "index.tsv"))
+    except Exception:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+    logger.info("Wrote the vault index (%d line(s)): %s", len(rows),
+                os.path.join(directory, "index.tsv"))
+
+
 def process_assembly(row, outdir, config_file, refgenie_bin, do_cleanup, logger,
                      sources=None):
     """
@@ -870,6 +1063,9 @@ def process_assembly(row, outdir, config_file, refgenie_bin, do_cleanup, logger,
     fasta_path = None
     # Filled in just before the FASTA build; see snapshot_aliases.
     aliases_before = None
+    # True when the vault's FASTA was replaced from this download, which is the one
+    # time the genome's existing download record should be replaced with it.
+    fasta_rebuilt = False
 
     if os.path.exists(asm_dir):
         # Find and register FASTA
@@ -911,6 +1107,7 @@ def process_assembly(row, outdir, config_file, refgenie_bin, do_cleanup, logger,
                 )
                 try:
                     subprocess.run(cmd + ["-N"], check=True)
+                    fasta_rebuilt = True
                 except subprocess.CalledProcessError as e:
                     logger.error("FASTA rebuild failed for '%s': %s", assembly, e)
                     problems.append(f"{assembly}: FASTA rebuild for the dictionary failed ({e})")
@@ -1050,6 +1247,15 @@ def process_assembly(row, outdir, config_file, refgenie_bin, do_cleanup, logger,
                     assembly, asm_dir
                 )
                 problems.append(f"{assembly}: annotation requested but no GTF found")
+
+        # The download's own record, into the vault. After the aliases are merged,
+        # so it is built against the full alias set, and before the relink below,
+        # so that covers it too.
+        if fasta_registered:
+            problems.extend(register_download_record(
+                asm_dir, vault_name, assembly, refgenie_bin, config_file, logger,
+                force=fasta_rebuilt
+            ))
 
         # Every asset for this genome now exists and the aliases are merged, so
         # refresh the symlink tree once, covering assets built before the aliases
@@ -1244,6 +1450,13 @@ def main():
     for key in sorted(set(sources) - used_sources):
         logger.error("--source '%s' matches no row in '%s'", key, resolved_csv)
         all_problems.append(f"source '{key}' matches no request and was not ingested")
+
+    # The plain-text index of the vault, rebuilt from the vault itself.
+    try:
+        write_vault_index(outdir, config_file, logger)
+    except Exception as e:
+        logger.error("Could not write the vault index: %s", e)
+        all_problems.append(f"vault index not written ({e})")
 
     # Written whether or not there were problems: it lists what IS in the vault,
     # and the exit code below says whether that is everything that was asked for.

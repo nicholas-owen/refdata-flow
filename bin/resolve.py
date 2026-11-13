@@ -27,8 +27,11 @@ from loguru import logger as genomepy_logger
 # providers - Mus_musculus/GRCm39 from Ensembl and from GENCODE share that key, so
 # both rows were handed the last row's aliases and the first genome ended up
 # carrying the second's. A resolved row that carries its own aliases needs no join.
+#
+# `url` and `annotation_url` are filled only for a genome requested by address
+# (provider 'url'), where they are the request: there is no provider to ask.
 RESOLVED_FIELDNAMES = ["species", "assembly", "provider", "annotation", "query",
-                       "release", "aliases"]
+                       "release", "aliases", "url", "annotation_url"]
 
 # Which providers can actually be pinned to a release.
 #
@@ -482,6 +485,60 @@ def cached_resolution(cache, species, query, release, provider_filter):
 # Request consistency
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Genomes requested by address (provider 'url')
+# ---------------------------------------------------------------------------
+#
+# Some reference genomes cannot be found by searching a provider, because no
+# provider's catalogue lists them: NCBI's GRCh38 "analysis sets", the Broad's
+# Homo_sapiens_assembly38.fasta that the GATK resource bundle is built against, a
+# consortium's own release. They are published as a file at an address. A row with
+# provider 'url' names that address in the `url` column and is taken as it stands:
+# nothing is searched and nothing is chosen.
+#
+# With no provider to supply one, the genome's name is the row's `query`, and an
+# annotation has to be given by address too.
+URL_PROVIDER = "url"
+
+# The name becomes a directory, a refgenie genome name and part of shell commands.
+NAME_RE = re.compile(r"^[A-Za-z0-9._-]+$")
+
+# Deliberately narrower than what a URL may legally contain. The address is handed
+# to a shell command by the workflow, so the characters a shell acts on inside
+# double quotes ($, `, ", \) are excluded, and with them ? and &: no reference
+# file surveyed needs a query string, and a rule that is simple to state is one
+# that is simple to check.
+URL_RE = re.compile(r"^(https?|ftp)://[A-Za-z0-9._~/%+=:@,-]+$")
+ANNOTATION_URL_RE = re.compile(r"\.(gtf|gff3?|bed)(\.gz)?$", re.IGNORECASE)
+URL_RULE = ("an http, https or ftp address using only letters, digits and the "
+            "characters . _ ~ / % + = : @ , -")
+
+
+def url_request_problem(query, url, annotation_url, annotation):
+    """Why a provider-'url' row cannot be used as written, or None."""
+    if not url:
+        return ("provider 'url' takes the genome from an address, and the url column "
+                "is empty")
+    if not URL_RE.match(url):
+        return f"url '{url}' cannot be used: it must be {URL_RULE}"
+    if not NAME_RE.match(query):
+        return (f"with provider 'url' the query is the name the genome will be known "
+                f"by, and '{query}' has characters other than letters, digits, '.', "
+                "'_' and '-'")
+    if wants_annotation(annotation):
+        if not annotation_url:
+            return ("annotation was requested, but an address has no provider to "
+                    "supply one: give the annotation's address in the annotation_url "
+                    "column, or set annotation to false")
+        if not URL_RE.match(annotation_url):
+            return (f"annotation_url '{annotation_url}' cannot be used: it must be "
+                    f"{URL_RULE}")
+        if not ANNOTATION_URL_RE.search(annotation_url):
+            return (f"annotation_url '{annotation_url}' is not a GTF, GFF or BED file "
+                    "(optionally gzipped), which is all genomepy can take")
+    return None
+
+
 def wants_annotation(value):
     """The same test main.nf and update_refgenie.py apply to the annotation column."""
     return str(value or "").strip().lower() == "true"
@@ -596,7 +653,8 @@ def main():
         description="Resolve generic species queries into exact assemblies."
     )
     parser.add_argument("input_csv",
-                        help="Request CSV (species, query, provider, annotation, aliases, release)")
+                        help="Request CSV (species, query, provider, annotation, aliases, release, "
+                             "url, annotation_url)")
     parser.add_argument(
         "output_csv", nargs="?", default="requests/requests_resolved.csv",
         help="Resolved CSV to write (default: requests/requests_resolved.csv)",
@@ -634,6 +692,8 @@ def main():
                 # None - which must read as "unpinned", not crash.
                 release = (row.get("release") or "").strip()
                 aliases = parse_aliases(row.get("aliases"))
+                url = (row.get("url") or "").strip()
+                annotation_url = (row.get("annotation_url") or "").strip()
 
                 if not query:
                     unresolved.append(
@@ -664,6 +724,48 @@ def main():
                         print(f"ERROR: {reason}.", file=sys.stderr)
                         unresolved.append((lineno, species, query, reason))
                         continue
+
+                # ------------------------------------------------------------------
+                # A genome requested by address: taken as written, no search.
+                # (A release on such a row has already been refused just above.)
+                # ------------------------------------------------------------------
+                if provider_filter == URL_PROVIDER:
+                    # genomepy's own name for the provider, as for every other row.
+                    url_provider = PROVIDERS[URL_PROVIDER].name
+                    reason = (
+                        url_request_problem(query, url, annotation_url, annotation)
+                        or ledger.conflict(lineno, url_provider, query, release, aliases)
+                    )
+                    if reason:
+                        print(f"ERROR: {reason}.", file=sys.stderr)
+                        unresolved.append((lineno, species, query, reason))
+                        continue
+                    print(f"\n--- '{query}' for {species} is requested by address. "
+                          "Nothing to search. ---")
+                    resolved_rows.append({
+                        "species": species,
+                        "assembly": query,
+                        "provider": url_provider,
+                        "annotation": annotation,
+                        "query": query,
+                        "release": release,
+                        "aliases": ";".join(aliases),
+                        "url": url,
+                        "annotation_url": annotation_url if wants_annotation(annotation) else "",
+                    })
+                    write_resolved(output_file, resolved_rows)
+                    continue
+                if url or annotation_url:
+                    # Ignoring it would download something other than the address
+                    # the row plainly names.
+                    reason = (
+                        "the url and annotation_url columns are only used with provider "
+                        f"'{URL_PROVIDER}'; this row's provider is "
+                        f"'{provider_filter or '(none)'}'"
+                    )
+                    print(f"ERROR: {reason}.", file=sys.stderr)
+                    unresolved.append((lineno, species, query, reason))
+                    continue
 
                 # ------------------------------------------------------------------
                 # Cache lookup
