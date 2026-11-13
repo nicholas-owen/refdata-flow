@@ -1,0 +1,31 @@
+{
+  "name": "blacklist",
+  "description": "The ENCODE blacklist (version 2, Boyle lab) for this genome's build, stored exactly as published, with a record of the fetch. Registered only after every interval was found to lie on a sequence this genome has and within its length (bin/prepare_resource.py); the result of that check is in the asset's provenance file. This replaces refgenie's stock `blacklist` recipe, which copies whatever file it is handed and checks nothing.",
+  "required_files": [
+    {
+      "key": "blacklist",
+      "description": "the gzipped BED file as published"
+    },
+    {
+      "key": "provenance",
+      "description": "the fetch record and compatibility summary"
+    }
+  ],
+  "required_assets": [
+    {
+      "key": "genome_fasta",
+      "default": "fasta",
+      "description": "the genome whose coordinates the intervals are in"
+    }
+  ],
+  "required_parameters": [],
+  "container": "databio/refgenie",
+  "assets": {
+    "blacklist": "{genome}.bed.gz",
+    "provenance": "{genome}.provenance.json"
+  },
+  "command_list": [
+    "cp {blacklist} {asset_outfolder}/{genome}.bed.gz",
+    "cp {provenance} {asset_outfolder}/{genome}.provenance.json"
+  ]
+}

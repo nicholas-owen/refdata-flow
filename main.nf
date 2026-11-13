@@ -418,33 +418,132 @@ process DERIVE_TXOME {
     """
 }
 
-// File a derived asset in the vault, against the genome it was derived from.
+// Fetch a third-party resource - ClinVar, the ENCODE blacklist - for a genome
+// already in the vault. What can be fetched, and from where, is described by the
+// files in resources/; see bin/resource_registry.py.
 //
-// The counterpart of REGISTER for things that were built, not downloaded. One
+// bin/fetch_resource.py works out the published version before downloading and
+// fetches only when the vault does not already hold it, so this task is cheap on
+// every run but the first. It then verifies the file against the publisher's
+// checksum where one is posted. `fetched/` always comes out: holding either the
+// file and its fetch record, or a file called SKIP, which the workflow filters on.
+//
+// Like FETCH_GENOME it needs the network, carries the 'network' label, and is
+// retried the same way. Its report is always shown.
+//
+// The stub writes a two-line file on the genome's first sequence, so that the
+// real compatibility check which follows has something true to pass; it reports
+// SKIP when the genome already holds the resource, as the real script would.
+process FETCH_RESOURCE {
+    tag "${name}:${variant} for ${genome}"
+    label 'network'
+    debug true
+
+    errorStrategy {
+        if( task.attempt > asInt(params.max_retries, 'max_retries') )
+            return 'finish'
+        sleep(asInt(params.retry_wait, 'retry_wait') * 1000L * task.attempt)
+        return 'retry'
+    }
+    maxRetries(params.max_retries.toString().trim().isInteger() ? params.max_retries.toString().trim().toInteger() : 0)
+
+    input:
+    tuple val(genome), val(name), val(variant), val(held), path(chrom_sizes), path(registry)
+
+    output:
+    tuple val(genome), val(name), val(variant), path(chrom_sizes), path(registry), path('fetched')
+
+    script:
+    def release_flag = isTrue(params.check_releases) ? '' : '--no-release-check'
+    """
+    fetch_resource.py --registry "${registry}" --variant "${variant}" --genome "${genome}" \\
+        --held "${held}" --outdir fetched ${release_flag}
+    """
+
+    stub:
+    """
+    mkdir -p fetched
+    if [ -n "${held}" ]; then
+        echo "stub: ${name}:${variant} is already held (${held})" > fetched/SKIP
+        echo "  SKIP   ${name}:${variant} for ${genome}: held (${held})"
+        exit 0
+    fi
+    contig=\$(head -n 1 "${chrom_sizes}" | cut -f 1)
+    if grep -q '"kind": *"vcf"' "${registry}"; then
+        file=${name}.vcf.gz
+        printf '##fileformat=VCFv4.1\\n##source=stub\\n#CHROM\\tPOS\\tID\\tREF\\tALT\\tQUAL\\tFILTER\\tINFO\\n%s\\t5\\t.\\tA\\tC\\t.\\t.\\t.\\n%s\\t9\\t.\\tG\\tT\\t.\\t.\\t.\\n' "\$contig" "\$contig" \\
+            | gzip -nc > "fetched/\$file"
+    else
+        file=${name}.bed.gz
+        printf '%s\\t1\\t5\\tstub\\n' "\$contig" | gzip -nc > "fetched/\$file"
+    fi
+    printf '{"stub": true, "resource": "%s", "variant": "%s", "url": "stub", "version": "stub1", "file": "%s"}\\n' \\
+        "${name}" "${variant}" "\$file" > "fetched/${name}.fetch.json"
+    echo "  FETCH  ${name}:${variant} for ${genome} (stub)"
+    """
+}
+
+// Decide whether a fetched resource belongs to the genome it was requested for,
+// and index it if its registry entry says to. bin/prepare_resource.py explains
+// the three checks; in short, the resource's sequence names and positions are
+// compared with the genome's own chrom.sizes, and a resource that does not fit is
+// refused here, loudly, and never reaches the vault.
+//
+// A refusal fails the task. 'finish' rather than the default, so the other
+// resources and transcriptomes in the run are still completed and registered
+// before the run exits non-zero.
+//
+// It runs on the launching machine with the wrapper's Python environment, whose
+// pysam builds the tabix index. No stub block: under -stub this is the real check.
+process PREPARE_RESOURCE {
+    tag "${name}:${variant} for ${genome}"
+    errorStrategy 'finish'
+    debug true
+
+    input:
+    tuple val(genome), val(name), val(variant), path(chrom_sizes), path(registry), path(fetched)
+
+    output:
+    tuple val(genome), val(name), path('prepared')
+
+    script:
+    """
+    export PATH="${params.venv_bin}:\$PATH"
+    prepare_resource.py --registry "${registry}" --variant "${variant}" --genome "${genome}" \\
+        --fetched "${fetched}" --chrom-sizes "${chrom_sizes}" --outdir prepared
+    """
+}
+
+// File something in the vault against a genome already there: a transcriptome
+// derived from it, or a resource fetched for it.
+//
+// The counterpart of REGISTER for everything that is not the download itself. One
 // task per asset, one at a time: like REGISTER it edits the vault's single config,
 // runs on the launching machine with the wrapper's Python environment, and is
-// never cached. Order does not matter here - no two derived assets compete for a
-// name - so there is no need to batch them into one task as REGISTER does.
+// never cached. Order does not matter here - no two of these compete for a name -
+// so there is no need to batch them into one task as REGISTER does.
 //
-// The annotation release is both the tag and a recorded parent, so the vault says
-// which GTF a transcriptome came from and `refgenie seek <genome>/fasta_txome:116`
-// means what it looks like it means.
+// What to register arrives as data: the asset's name, which is also the name of
+// its recipe in recipes/; the tag; the files, each with the key its recipe knows
+// it by; and any parent assets to record. file_keys[i] names files[i].
 process REGISTER_ASSET {
-    tag "${genome}/fasta_txome:${release}"
+    tag "${genome}/${asset}:${asset_tag}"
     maxForks 1
     cache false
     debug(params.debug.toString().toLowerCase() == 'true')
 
     input:
     val vault
-    tuple val(genome), val(annotation_asset), val(release), path(transcripts), path(provenance)
+    tuple val(genome), val(asset), val(asset_tag), val(file_keys), path(files), val(parents)
 
     script:
+    def staged = files instanceof List ? files : [files]
+    def file_args = (0..<file_keys.size()).collect { i -> "--file '${file_keys[i]}=${staged[i]}'" }.join(' ')
+    def parent_args = parents.collect { parent -> "--parent '${parent}'" }.join(' ')
     """
     export PATH="${params.venv_bin}:\$PATH"
-    register_asset.py "${vault}" --genome "${genome}" --asset fasta_txome --tag "${release}" \\
-        --file "transcripts=${transcripts}" --file "provenance=${provenance}" \\
-        --parent "annotation=${annotation_asset}:${release}"
+    register_asset.py "${vault}" --genome "${genome}" --asset "${asset}" --tag "${asset_tag}" \\
+        ${file_args} ${parent_args}
     """
 }
 
@@ -603,7 +702,66 @@ workflow {
                 .set { txome_ch }
 
             DERIVE_TXOME(txome_ch)
-            REGISTER_ASSET(vault, DERIVE_TXOME.out)
+
+            // The annotation release is both the tag and a recorded parent, so the
+            // vault says which GTF a transcriptome came from.
+            DERIVE_TXOME.out
+                .map { genome, annotation_asset, release, transcripts, provenance ->
+                    tuple(genome, 'fasta_txome', release, ['transcripts', 'provenance'],
+                          [transcripts, provenance],
+                          ["annotation=${annotation_asset}:${release}".toString()])
+                }
+                .set { txome_assets_ch }
         }
+        else {
+            channel.empty().set { txome_assets_ch }
+        }
+
+        // Third-party resources, for the rows that ask for any. One task per
+        // genome and resource; `held` is the versions of it the genome already
+        // has, which is what lets the fetch step skip a download.
+        REGISTER.out.manifest
+            .splitCsv(header: true, sep: '\t')
+            .filter { row -> row.resources && row.chrom_sizes }
+            .flatMap { row ->
+                row.resources.tokenize(';').collect { request ->
+                    def parts = request.tokenize(':')
+                    def name = safe(parts[0], 'resource')
+                    def variant = safe(parts[1], 'resource build')
+                    def have = (row.assets ?: '').tokenize(';').find { item -> item.startsWith("${name}:") }
+                    def held = have ? have.substring(name.size() + 1) : ''
+                    if( held && !(held ==~ /^[A-Za-z0-9._,-]+$/) )
+                        error "Unsafe characters in the versions held of '${name}': '${held}'"
+                    tuple(safe(row.vault_name, 'vault_name'), name, variant, held,
+                          file(row.chrom_sizes),
+                          file("${projectDir}/resources/${name}.json", checkIfExists: true))
+                }
+            }
+            .unique { item -> "${item[0]}/${item[1]}".toString() }
+            .set { resource_ch }
+
+        FETCH_RESOURCE(resource_ch)
+
+        // Nothing to prepare where the fetch step found the vault up to date.
+        FETCH_RESOURCE.out
+            .filter { _genome, _name, _variant, _sizes, _registry, fetched -> !file("${fetched}/SKIP").exists() }
+            .set { fetched_ch }
+
+        PREPARE_RESOURCE(fetched_ch)
+
+        // prepared/ holds the data file, its index if it has one, provenance.json
+        // and TAG. Each file is handed over under the key its recipe expects.
+        PREPARE_RESOURCE.out
+            .map { genome, name, prepared ->
+                def version = safe(file("${prepared}/TAG").text.trim(), 'resource version')
+                def files = prepared.listFiles().findAll { item -> item.name != 'TAG' }.sort { item -> item.name }
+                def keys = files.collect { item ->
+                    item.name == 'provenance.json' ? 'provenance' : (item.name.endsWith('.tbi') ? 'tbi' : name)
+                }
+                tuple(genome, name, version, keys, files, [])
+            }
+            .set { resource_assets_ch }
+
+        REGISTER_ASSET(vault, txome_assets_ch.mix(resource_assets_ch))
     }
 }

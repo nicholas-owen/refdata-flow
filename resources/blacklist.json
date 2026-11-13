@@ -1,0 +1,45 @@
+{
+  "name": "blacklist",
+  "description": "The ENCODE blacklist, version 2 (Amemiya, Kundaje and Boyle 2019): regions with anomalous signal in functional genomics assays, to be excluded from ChIP-seq, ATAC-seq and similar analyses. Published by the Boyle lab.",
+  "kind": "bed",
+  "index": null,
+  "terms": "https://github.com/Boyle-Lab/Blacklist",
+  "min_matched": 1.0,
+  "variants": {
+    "hg38": {
+      "url": "https://raw.githubusercontent.com/Boyle-Lab/Blacklist/master/lists/hg38-blacklist.v2.bed.gz",
+      "version": "v2",
+      "naming": "UCSC: chr1, chr2, chrX. Fits a UCSC-named GRCh38 genome, such as an analysis set; not an Ensembl one."
+    },
+    "hg19": {
+      "url": "https://raw.githubusercontent.com/Boyle-Lab/Blacklist/master/lists/hg19-blacklist.v2.bed.gz",
+      "version": "v2",
+      "naming": "UCSC."
+    },
+    "mm10": {
+      "url": "https://raw.githubusercontent.com/Boyle-Lab/Blacklist/master/lists/mm10-blacklist.v2.bed.gz",
+      "version": "v2",
+      "naming": "UCSC. There is no version 2 list for GRCm39 (mm39)."
+    },
+    "dm6": {
+      "url": "https://raw.githubusercontent.com/Boyle-Lab/Blacklist/master/lists/dm6-blacklist.v2.bed.gz",
+      "version": "v2",
+      "naming": "UCSC."
+    },
+    "dm3": {
+      "url": "https://raw.githubusercontent.com/Boyle-Lab/Blacklist/master/lists/dm3-blacklist.v2.bed.gz",
+      "version": "v2",
+      "naming": "UCSC."
+    },
+    "ce11": {
+      "url": "https://raw.githubusercontent.com/Boyle-Lab/Blacklist/master/lists/ce11-blacklist.v2.bed.gz",
+      "version": "v2",
+      "naming": "UCSC."
+    },
+    "ce10": {
+      "url": "https://raw.githubusercontent.com/Boyle-Lab/Blacklist/master/lists/ce10-blacklist.v2.bed.gz",
+      "version": "v2",
+      "naming": "UCSC."
+    }
+  }
+}

@@ -1,0 +1,37 @@
+{
+  "name": "clinvar",
+  "description": "ClinVar's VCF of variants with clinical assertions, as published by NCBI for one genome build, with a tabix index built on arrival and a record of the fetch. The tag is the date NCBI last changed the file, so a genome can hold several weekly releases side by side. Registered only after its contigs and coordinates were checked against this genome's own sequence names and lengths (bin/prepare_resource.py); what that check found, including any records on sequences this genome does not have, is in the asset's provenance file. The VCF itself is byte-for-byte the published file, and was verified against NCBI's posted md5.",
+  "required_files": [
+    {
+      "key": "clinvar",
+      "description": "the bgzipped VCF as published"
+    },
+    {
+      "key": "tbi",
+      "description": "its tabix index"
+    },
+    {
+      "key": "provenance",
+      "description": "the fetch record and compatibility summary"
+    }
+  ],
+  "required_assets": [
+    {
+      "key": "genome_fasta",
+      "default": "fasta",
+      "description": "the genome whose coordinates the variants are in"
+    }
+  ],
+  "required_parameters": [],
+  "container": "databio/refgenie",
+  "assets": {
+    "clinvar": "{genome}.vcf.gz",
+    "tbi": "{genome}.vcf.gz.tbi",
+    "provenance": "{genome}.provenance.json"
+  },
+  "command_list": [
+    "cp {clinvar} {asset_outfolder}/{genome}.vcf.gz",
+    "cp {tbi} {asset_outfolder}/{genome}.vcf.gz.tbi",
+    "cp {provenance} {asset_outfolder}/{genome}.provenance.json"
+  ]
+}

@@ -11,6 +11,8 @@ from collections import namedtuple
 
 import genomepy
 from genomepy.providers import PROVIDERS, list_providers
+
+import resource_registry
 # genomepy logs through loguru's single global logger. Importing it here gives
 # this script the same object, to restyle its output and to listen to it.
 from loguru import logger as genomepy_logger
@@ -30,8 +32,12 @@ from loguru import logger as genomepy_logger
 #
 # `url` and `annotation_url` are filled only for a genome requested by address
 # (provider 'url'), where they are the request: there is no provider to ask.
+#
+# `resources` lists the third-party datasets wanted alongside the genome, as
+# name:build pairs (`clinvar:GRCh38;blacklist:hg38`), checked here against the
+# registry in resources/ so that a mistyped name fails before anything is fetched.
 RESOLVED_FIELDNAMES = ["species", "assembly", "provider", "annotation", "query",
-                       "release", "aliases", "url", "annotation_url"]
+                       "release", "aliases", "url", "annotation_url", "resources"]
 
 # Which providers can actually be pinned to a release.
 #
@@ -654,7 +660,7 @@ def main():
     )
     parser.add_argument("input_csv",
                         help="Request CSV (species, query, provider, annotation, aliases, release, "
-                             "url, annotation_url)")
+                             "url, annotation_url, resources)")
     parser.add_argument(
         "output_csv", nargs="?", default="requests/requests_resolved.csv",
         help="Resolved CSV to write (default: requests/requests_resolved.csv)",
@@ -670,6 +676,15 @@ def main():
     output_file = args.output_csv
 
     configure_genomepy_logging()
+
+    # What can be asked for in the `resources` column. A definition that cannot be
+    # read is a fault in the pipeline's own files, not in a request row, so it
+    # stops the run rather than being reported against whichever row came first.
+    try:
+        registry = resource_registry.load_registry()
+    except ValueError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
 
     resolved_cache = load_cache(output_file)
     ledger = RequestLedger()
@@ -694,11 +709,22 @@ def main():
                 aliases = parse_aliases(row.get("aliases"))
                 url = (row.get("url") or "").strip()
                 annotation_url = (row.get("annotation_url") or "").strip()
+                wanted, resources_problem = resource_registry.parse_request(
+                    row.get("resources"), registry
+                )
+                resources = resource_registry.format_request(wanted)
 
                 if not query:
                     unresolved.append(
                         (lineno, species or "(no species)", "(empty)", "no query given")
                     )
+                    continue
+
+                # Resources that are not in the registry, or not published for the
+                # build named. Offline, so before anything that touches the network.
+                if resources_problem:
+                    print(f"ERROR: {resources_problem}.", file=sys.stderr)
+                    unresolved.append((lineno, species, query, resources_problem))
                     continue
 
                 # A provider genomepy has never heard of. This used to pass through
@@ -750,6 +776,7 @@ def main():
                         "query": query,
                         "release": release,
                         "aliases": ";".join(aliases),
+                        "resources": resources,
                         "url": url,
                         "annotation_url": annotation_url if wants_annotation(annotation) else "",
                     })
@@ -801,6 +828,7 @@ def main():
                         "query": query,
                         "release": release,
                         "aliases": ";".join(aliases),
+                        "resources": resources,
                     })
                     write_resolved(output_file, resolved_rows)
                     continue
@@ -947,6 +975,7 @@ def main():
                     "query": query,
                     "release": release,
                     "aliases": ";".join(aliases),
+                        "resources": resources,
                 })
                 # Flush after every resolution so an interrupted interactive session
                 # keeps the answers already given.

@@ -472,6 +472,10 @@ MANIFEST_FIELDS = [
     "annotation_tag",    # the release this row means: its pin, else the default tag
     "gtf",               # that release's GTF in the vault ('' if not there)
     "fasta_txome_tags",  # ';'-joined releases a transcriptome already exists for
+    # And to attach a third-party resource to it:
+    "chrom_sizes",       # the genome's sequence names and lengths ('' if not there)
+    "resources",         # what the request asked for: name:build;name:build
+    "assets",            # everything the genome holds: asset:tag,tag;asset:tag
 ]
 
 
@@ -534,6 +538,15 @@ def write_manifest(path, rows, config_file):
                 "gtf": gtf,
                 "fasta_txome_tags": ";".join(sorted(
                     asset_tags_on_disk(config, config_file, digest, "fasta_txome"))),
+                "chrom_sizes": asset_file(config, config_file, digest, "fasta", "default",
+                                          "chrom_sizes"),
+                "resources": (row.get("resources") or "").strip(),
+                "assets": ";".join(
+                    f"{asset}:{','.join(sorted(tags))}"
+                    for asset in sorted(config["genomes"][digest].get("assets") or {})
+                    for tags in [asset_tags_on_disk(config, config_file, digest, asset)]
+                    if tags
+                ),
             })
 
 

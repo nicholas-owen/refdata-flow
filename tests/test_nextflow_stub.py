@@ -449,6 +449,89 @@ class Transcriptome(NextflowTestCase):
         self.assertIn("fasta_txome", load_vault(outdir)["toyAsm_gencode"]["assets"])
 
 
+@unittest.skipIf(ingest_unavailable(), ingest_unavailable())
+class Resources(NextflowTestCase):
+    """
+    The `resources` column: fetch, check against the genome, register.
+
+    Under -stub the fetch writes a two-line file on the genome's first sequence.
+    The compatibility check and the registration that follow are the real ones.
+    """
+
+    HEADER = HEADER.rstrip("\n") + ",url,annotation_url,resources\n"
+    REQUESTS = (HEADER
+                + "Mus_musculus,toyAsm,Ensembl,TRUE,toyAsm,,mouse_ens,,,clinvar:GRCh38;blacklist:hg38\n"
+                + "Mus_musculus,toyAsm,Ensembl,TRUE,toyAsm,110,mouse_ens,,,clinvar:GRCh38\n"
+                + "Foo_bar,seqOnly,NCBI,false,seqOnly,,,,,\n")
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        cls.outdir = os.path.join(cls.work, "out")
+        cls.requests = cls.write_requests("requests_resolved.csv", cls.REQUESTS)
+        cls.run_result = cls.nextflow(cls.requests, cls.outdir, register=True)
+
+    def submitted(self, process, output=None):
+        return sorted(line.split(f"{process} (")[1].rstrip(")")
+                      for line in (output or self.run_result.stdout).splitlines()
+                      if f"Submitted process > {process} (" in line)
+
+    def test_01_run_succeeds(self):
+        self.assertEqual(self.run_result.returncode, 0, self.run_result.stdout[-3000:])
+
+    def test_02_each_resource_is_fetched_once_per_genome(self):
+        # Two rows are the same genome and both ask for clinvar: one fetch, not two.
+        # The row that asks for nothing gets nothing.
+        expected = ["blacklist:hg38 for toyAsm_ensembl", "clinvar:GRCh38 for toyAsm_ensembl"]
+        self.assertEqual(self.submitted("FETCH_RESOURCE"), expected)
+        self.assertEqual(self.submitted("PREPARE_RESOURCE"), expected)
+        self.assertEqual(self.submitted("REGISTER_ASSET"),
+                         ["toyAsm_ensembl/blacklist:stub1", "toyAsm_ensembl/clinvar:stub1"])
+
+    def test_03_registered_with_index_provenance_and_the_genome_as_parent(self):
+        vault = load_vault(self.outdir)
+        genome = vault["toyAsm_ensembl"]
+        self.assertNotIn("clinvar", vault["seqOnly_ncbi"]["assets"])
+        clinvar = genome["assets"]["clinvar"]["tags"]["stub1"]
+        self.assertEqual(set(clinvar["seek_keys"]) - {"dir"}, {"clinvar", "tbi", "provenance"})
+        self.assertEqual([p.split("/")[1] for p in clinvar["asset_parents"]], ["fasta:default"])
+        directory = os.path.join(self.outdir, "alias", "mouse_ens", "clinvar", "stub1")
+        for name in ("mouse_ens.vcf.gz", "mouse_ens.vcf.gz.tbi", "mouse_ens.provenance.json"):
+            self.assertTrue(os.path.isfile(os.path.join(directory, name)), name)
+        # The blacklist asks for no index and gets none.
+        self.assertEqual(sorted(os.listdir(
+            os.path.join(self.outdir, "alias", "mouse_ens", "blacklist", "stub1"))),
+            ["_refgenie_build", "mouse_ens.bed.gz", "mouse_ens.provenance.json"])
+
+    def test_04_provenance_says_what_the_compatibility_check_found(self):
+        with open(os.path.join(self.outdir, "alias", "mouse_ens", "clinvar", "stub1",
+                               "mouse_ens.provenance.json")) as f:
+            record = json.load(f)
+        self.assertEqual((record["resource"], record["variant"], record["genome"]),
+                         ("clinvar", "GRCh38", "toyAsm_ensembl"))
+        self.assertEqual(record["compatibility"]["share_matched"], 1.0)
+        self.assertTrue(record["indexed"])
+
+    def test_05_second_run_fetches_and_registers_nothing(self):
+        result = self.nextflow(self.requests, self.outdir, register=True)
+        self.assertEqual(result.returncode, 0, result.stdout[-3000:])
+        # The fetch step is asked, and answers that the vault is up to date.
+        self.assertEqual(len(self.submitted("FETCH_RESOURCE", result.stdout)), 2)
+        self.assertEqual(result.stdout.count("  SKIP   clinvar:GRCh38"), 1)
+        self.assertNotIn("PREPARE_RESOURCE", result.stdout)
+        self.assertNotIn("REGISTER_ASSET", result.stdout)
+
+    def test_06_resources_and_transcriptomes_register_in_the_same_run(self):
+        outdir = os.path.join(self.work, "both.out")
+        result = self.nextflow(self.requests, outdir, register=True, default_txome=True)
+        self.assertEqual(result.returncode, 0, result.stdout[-3000:])
+        self.assertEqual(self.submitted("REGISTER_ASSET", result.stdout),
+                         ["toyAsm_ensembl/blacklist:stub1", "toyAsm_ensembl/clinvar:stub1",
+                          "toyAsm_ensembl/fasta_txome:110", "toyAsm_ensembl/fasta_txome:999"])
+        assets = load_vault(outdir)["toyAsm_ensembl"]["assets"]
+        self.assertTrue({"clinvar", "blacklist", "fasta_txome"} <= set(assets))
+
+
 def gffread_unavailable():
     return ingest_unavailable() or (
         None if shutil.which("gffread") else "gffread is not on PATH")

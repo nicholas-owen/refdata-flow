@@ -1,0 +1,28 @@
+{
+  "name": "clinvar",
+  "description": "ClinVar's VCF of variants with clinical assertions, from NCBI. One file per genome build, replaced in place about once a week.",
+  "kind": "vcf",
+  "index": "tabix",
+  "terms": "https://www.ncbi.nlm.nih.gov/clinvar/docs/maintenance_use/",
+  "min_matched": 0.95,
+  "variants": {
+    "GRCh38": {
+      "url": "https://ftp.ncbi.nlm.nih.gov/pub/clinvar/vcf_GRCh38/clinvar.vcf.gz",
+      "version": "last_modified",
+      "checksum": {
+        "type": "md5",
+        "url": "https://ftp.ncbi.nlm.nih.gov/pub/clinvar/vcf_GRCh38/clinvar.vcf.gz.md5"
+      },
+      "naming": "Ensembl-style: 1, 2, X, MT. Fits an Ensembl or NCBI-named GRCh38 genome, not a UCSC-named one."
+    },
+    "GRCh37": {
+      "url": "https://ftp.ncbi.nlm.nih.gov/pub/clinvar/vcf_GRCh37/clinvar.vcf.gz",
+      "version": "last_modified",
+      "checksum": {
+        "type": "md5",
+        "url": "https://ftp.ncbi.nlm.nih.gov/pub/clinvar/vcf_GRCh37/clinvar.vcf.gz.md5"
+      },
+      "naming": "Ensembl-style: 1, 2, X, MT."
+    }
+  }
+}

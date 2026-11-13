@@ -66,6 +66,8 @@ The tests need no network and no extra packages. Run them with the pipeline's ow
 - `tests/test_resolve.py` drives the resolver with the provider search faked.
 - `tests/test_update_refgenie.py` covers the vault naming, alias and default-tag rules.
 - `tests/test_preflight.py` covers which requests the vault already satisfies, with the provider's "current release" supplied by the test.
+- `tests/test_download.py` covers the download record, with the download itself replaced.
+- `tests/test_resources.py` covers third-party resources: the registry, the fetch step with the network replaced, and the check of a resource against a genome.
 - `tests/test_ingest_e2e.py` builds a real refgenie vault from 40-base toy genomes: one assembly from two providers, plus an older pinned release. It is skipped, with the reason printed, where refgenie or `samtools` is missing or the filesystem has no symlinks.
 - `tests/test_nextflow_stub.py` executes `main.nf`. Most of it uses `nextflow run -stub`, which replaces the download with a toy assembly directory and leaves everything around it real: request validation, the duplicate guard, the publish layout. The `Registration` tests run the whole thing, download and catalogue, in one Nextflow run, with and without `--cleanup`. The retry tests run the real script with a `python3` that only fails. It is skipped where `nextflow` is not on `PATH`, and takes about four minutes.
 
@@ -82,8 +84,11 @@ nextflow run main.nf -stub -profile standard --input requests/requests_resolved.
 ```
 ├── bin/
 │   ├── download.py          # Fetches one genome and its annotation (FETCH_GENOME)
+│   ├── fetch_resource.py    # Fetches one third-party resource (FETCH_RESOURCE)
 │   ├── preflight.py         # Lists the requests the vault does not already hold (PREFLIGHT)
-│   ├── register_asset.py    # Registers a derived asset, e.g. a transcriptome (REGISTER_ASSET)
+│   ├── prepare_resource.py  # Checks a resource against its genome and indexes it (PREPARE_RESOURCE)
+│   ├── register_asset.py    # Registers a transcriptome or a resource (REGISTER_ASSET)
+│   ├── resource_registry.py # Reads the resource descriptions in resources/
 │   ├── resolve.py           # Interactive resolver: generic queries to exact assemblies
 │   └── update_refgenie.py   # Registers downloads in the refgenie vault (REGISTER)
 ├── conf/
@@ -94,6 +99,7 @@ nextflow run main.nf -stub -profile standard --input requests/requests_resolved.
 ├── nextflow.config          # Nextflow configuration profiles
 ├── README.md
 ├── recipes/                 # refgenie recipes this pipeline builds assets with
+├── resources/               # Third-party resources that can be requested, one file each
 ├── tests/                   # Offline test suite
 ├── requests/
 │   ├── requests_raw.csv.example   # Tracked template, copied on first run
@@ -144,6 +150,57 @@ Such a row is taken as written. Nothing is searched and nothing is chosen for yo
 This matters most for variant calling. Your Ensembl human genome names its contigs `1`, `2`, `X`. The GATK known-sites files, the ENCODE blacklist and gnomAD all use `chr1`, `chr2`, `chrX`. They match the analysis-set and Broad genomes as they are, and do not match an Ensembl one.
 
 The columns are optional. A request file without them works as before.
+
+#### Third-party resources: ClinVar, the ENCODE blacklist
+
+A genome and its annotation come from a provider. Some things you need alongside them come from somebody else entirely: a variant database, a list of regions to exclude. Ask for them in a `resources` column, as `name:build` pairs separated by semicolons:
+
+```csv
+species,query,provider,annotation,aliases,release,url,annotation_url,resources
+Homo_sapiens,GRCh38,ensembl,TRUE,human,116,,,clinvar:GRCh38
+Homo_sapiens,GRCh38_no_alt,url,false,hs38_noalt,,https://.../GCA_000001405.15_GRCh38_no_alt_analysis_set.fna.gz,,blacklist:hg38
+```
+
+```bash
+refgenie seek human/clinvar              # the VCF, with its .tbi beside it
+refgenie seek hs38_noalt/blacklist       # the BED file
+refgenie seek human/clinvar.provenance   # where it came from, and what the check found
+```
+
+| Resource | Builds | What you get |
+|---|---|---|
+| `clinvar` | `GRCh38`, `GRCh37` | NCBI's VCF, verified against its published md5, with a tabix index. Named `1`, `2`, `X`. About 200 MB, replaced weekly. |
+| `blacklist` | `hg38`, `hg19`, `mm10`, `dm6`, `dm3`, `ce11`, `ce10` | The ENCODE blacklist v2, stored as published. Named `chr1`, `chr2`, `chrX`. A few kB. |
+
+**You name the build because the pipeline cannot work it out.** Two builds of one species can share every contig name, and only you know which you hold.
+
+**Nothing is registered until it has been checked against the genome.** A resource is a list of positions on named sequences, and whether those mean anything depends on the genome beside them. Tools do not complain when they do not match: a known-sites file that says `chr1` beside a genome that says `1` simply matches nothing, and the analysis runs to the end. So each file is compared with the genome's own sequence names and lengths first, and refused if:
+
+- too few of its records are on sequences the genome has (different naming);
+- any record lies beyond the end of its sequence (right names, wrong build);
+- it declares sequence lengths that differ from the genome's.
+
+A refusal says which, and the run exits non-zero with the vault untouched:
+
+```text
+ERROR: blacklist:hg38 was NOT registered for GRCh38_p14_ensembl:
+  - only 0.0% of its 636 records are on sequences this genome has (at least 100% is required).
+    The genome names its sequences 1, 10, 11, 12, ...; the resource names them chrX, chr3, chr5, chr2, ....
+  UCSC: chr1, chr2, chrX. Fits a UCSC-named GRCh38 genome, such as an analysis set; not an Ensembl one.
+```
+
+That example is the real result of asking for the blacklist on an Ensembl human genome. It belongs on a UCSC-named one, which is what requesting a genome by address is for.
+
+The check cannot prove a match. Two builds can agree on every name and length that a small file happens to touch. It catches what can be caught, and each thing it catches is certain.
+
+Other things to know:
+
+- **The version is the tag.** ClinVar is tagged with the date NCBI last changed the file, so weekly releases sit side by side and the newest is the default. The blacklist is `v2`.
+- **It is only fetched when it has changed.** Each run asks the publisher for the current version first and skips the download if the vault has it. With `--check_releases false`, whatever is held is kept.
+- **A few records may sit on sequences your genome lacks.** ClinVar has about fifty on unplaced scaffolds that a primary assembly leaves out. That passes, and they are listed in the asset's provenance.
+- **Resources follow the genome, not the row.** Two rows for one genome that both ask for ClinVar fetch it once.
+
+**Adding a resource** is two small files, with no code: a description in `resources/<name>.json` (its address for each build, how it is versioned, whether to index it) and a recipe in `recipes/<name>.json`. `resources/clinvar.json` and `resources/blacklist.json` are the patterns to copy. Files of kinds other than VCF and BED are not handled yet, nor are files that have to be renamed or reshaped before they fit.
 
 > **Three things are checked before anything is downloaded**, and each fails the row with the line number and the reason:
 >
@@ -572,6 +629,7 @@ Two operational notes:
   - **Failed downloads are retried**, twice by default, with at most four downloads running at once. Previously the first failure ended the run and killed every other download in progress. See *Failed downloads are retried*.
   - **Cataloguing moved into Nextflow.** The wrapper's third step is now the `REGISTER` process, which starts when every download has finished and reads each one as a task input instead of from the copy published under `--outdir`. `--cleanup` therefore no longer publishes sources and then deletes them; it does not publish them. `bin/update_refgenie.py` can still be run by hand against an existing download tree, and gains `--source` and `--manifest`.
   - **Every genome has a sequence dictionary**, beside its FASTA under every alias, so `refgenie seek <genome>/fasta` is usable as a GATK or Picard reference directly. It is a fourth file in the `fasta` asset (`recipes/fasta.json`), and genomes already in a vault gain one on their next ingest. See *Sequence dictionary*.
+  - **Third-party resources can be requested** in a `resources` column, starting with ClinVar and the ENCODE blacklist. Each is fetched only when its published version changes, verified against the publisher's checksum where there is one, and registered only after its sequence names and coordinates have been checked against the genome's own. See *Third-party resources*.
   - **A genome can be requested by address** (provider `url`), for the ones no provider's catalogue lists: analysis-set genomes, the Broad's assembly38. The row names the genome and gives the file's address; an annotation is given by address too. See *A genome that no provider lists*.
   - **The download record says what was downloaded.** `provenance.json` gains source URLs, the assembly accession and taxon, the masking and alt-contig settings, SHA-256 checksums of each file and of its contents, a summary of the annotation, tool versions and a UTC timestamp. It used to hold the four request fields and a local-time stamp. See *The download record*.
   - **The record lives in the vault**, as the `provenance` asset, tagged by annotation release and reachable by every alias. The NCBI assembly report, which maps each sequence's name between naming schemes, is kept beside it as `assembly_report`. `<outdir>/provenance/index.tsv` lists the whole vault as a plain table.

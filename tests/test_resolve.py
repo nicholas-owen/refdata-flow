@@ -384,6 +384,36 @@ class GenomeByAddress(ResolverTestCase):
         self.assertEqual((rows[0]["url"], rows[0]["annotation_url"]), ("", ""))
 
 
+class ResourcesColumn(ResolverTestCase):
+    HEADER = "species,query,provider,annotation,aliases,release,url,annotation_url,resources"
+
+    def test_request_is_checked_against_the_registry_and_carried_through(self):
+        code, rows, err = self.resolve(
+            ["Homo_sapiens,GRCh38,ensembl,TRUE,human,,,, clinvar:GRCh38 "], header=self.HEADER)
+        self.assertEqual(code, 0, err)
+        self.assertEqual(rows[0]["resources"], "clinvar:GRCh38")
+
+    def test_unknown_resource_fails_the_row_before_any_search(self):
+        code, rows, err = self.resolve(
+            ["Homo_sapiens,GRCh38,ensembl,TRUE,human,,,,dbsnp:GRCh38"], header=self.HEADER)
+        self.assertEqual(code, resolve.EXIT_UNRESOLVED)
+        self.assertEqual(rows, [])
+        self.assertEqual(self.searched, [])
+        self.assertIn("unknown resource 'dbsnp'", err)
+
+    def test_build_the_resource_is_not_published_for_fails_the_row(self):
+        code, _, err = self.resolve(
+            ["Homo_sapiens,GRCh38,ensembl,TRUE,human,,,,blacklist:GRCh38"], header=self.HEADER)
+        self.assertEqual(code, resolve.EXIT_UNRESOLVED)
+        self.assertIn("not published for 'GRCh38'", err)
+        self.assertIn("hg38", err)
+
+    def test_rows_without_the_column_resolve_with_it_empty(self):
+        code, rows, err = self.resolve(["Homo_sapiens,GRCh38,ensembl,TRUE,human,"])
+        self.assertEqual(code, 0, err)
+        self.assertEqual(rows[0]["resources"], "")
+
+
 class LogStyling(unittest.TestCase):
     RED = "\x1b[31m"
 
