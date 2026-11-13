@@ -78,7 +78,7 @@ class NextflowTestCase(unittest.TestCase):
 
     @classmethod
     def nextflow(cls, requests, outdir, *extra, stub=True, env=None,
-                 register=False, venv_bin=BIN_DIR):
+                 register=False, venv_bin=BIN_DIR, default_txome=False):
         # Most tests here are about the download side and pass --register false, so
         # they run wherever nextflow does. The Registration tests turn it on and
         # point REGISTER at the interpreter running this suite, which is the
@@ -89,6 +89,12 @@ class NextflowTestCase(unittest.TestCase):
         # current release is, for an assembly that exists only in these tests.
         command += (["--venv_bin", venv_bin, "--check_releases", "false"] if register
                     else ["--register", "false"])
+        # Transcriptomes are on by default. Most tests here are about something
+        # else and count tasks or list a genome's assets exactly, so they run with
+        # it off unless they say otherwise; the Transcriptome tests cover it, and
+        # one of them covers the default itself.
+        if register and "--txome" not in extra and not default_txome:
+            command += ["--txome", "false"]
         command += extra
         if stub:
             command.append("-stub")
@@ -209,7 +215,7 @@ class Registration(NextflowTestCase):
     def test_01_run_succeeds_with_one_register_task(self):
         self.assertEqual(self.run_result.returncode, 0, self.run_result.stdout[-3000:])
         self.assertEqual(self.run_result.stdout.count("Submitted process > REGISTER"), 1)
-        # Transcriptomes are opt-in.
+        # This class runs with --txome false, which must leave them out entirely.
         self.assertNotIn("DERIVE_TXOME", self.run_result.stdout)
 
     def test_02_every_download_is_in_the_vault(self):
@@ -333,7 +339,10 @@ def read_fasta(path):
 @unittest.skipIf(ingest_unavailable(), ingest_unavailable())
 class Transcriptome(NextflowTestCase):
     """
-    --txome: the path from REGISTER's manifest, through DERIVE_TXOME, into the vault.
+    The path from REGISTER's manifest, through DERIVE_TXOME, into the vault.
+
+    The class's main run passes no --txome flag at all: a transcriptome is part of
+    every run by default, and this is the test that it is.
 
     Under -stub the derivation itself is a stand-in (one short record per
     transcript in the GTF). Everything around it is real: which rows get a
@@ -346,7 +355,8 @@ class Transcriptome(NextflowTestCase):
         super().setUpClass()
         cls.outdir = os.path.join(cls.work, "out")
         cls.requests = cls.write_requests("requests_resolved.csv", REQUESTS)
-        cls.run_result = cls.nextflow(cls.requests, cls.outdir, "--txome", "true", register=True)
+        cls.run_result = cls.nextflow(cls.requests, cls.outdir, register=True,
+                                      default_txome=True)
 
     def refgenie(self, *arguments):
         env = dict(os.environ, PATH=BIN_DIR + os.pathsep + os.environ.get("PATH", ""))
@@ -405,10 +415,14 @@ class Transcriptome(NextflowTestCase):
         self.assertNotIn("REGISTER_ASSET", result.stdout)
 
     def test_07_transcriptome_can_be_added_to_genomes_already_in_the_vault(self):
-        # A vault built without --txome, asked for transcriptomes later: nothing is
-        # downloaded, and every annotated genome gets one.
+        # A vault built with --txome false, or before transcriptomes existed, and
+        # then run normally: nothing is downloaded, and every annotated genome
+        # gets one.
         outdir = os.path.join(self.work, "later.out")
-        self.assertEqual(self.nextflow(self.requests, outdir, register=True).returncode, 0)
+        without = self.nextflow(self.requests, outdir, "--txome", "false", register=True)
+        self.assertEqual(without.returncode, 0, without.stdout[-3000:])
+        self.assertNotIn("DERIVE_TXOME", without.stdout)
+        self.assertNotIn("fasta_txome", load_vault(outdir)["toyAsm_gencode"]["assets"])
         result = self.nextflow(self.requests, outdir, "--txome", "true", register=True)
         self.assertEqual(result.returncode, 0, result.stdout[-3000:])
         self.assertNotIn("FETCH_GENOME", result.stdout)

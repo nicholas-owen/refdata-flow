@@ -33,12 +33,12 @@ DEBUG=0
 CLEANUP=0
 NONINTERACTIVE=0
 REFETCH=0
-TXOME=0
+TXOME=1
 # Nextflow profiles. conda is always on - it supplies the tools - and --profile
 # adds to it, e.g. `--profile sge` runs with `-profile conda,sge`.
 PROFILES="conda"
 
-USAGE="Usage: bash run_pipeline.sh [requests.csv] [--outdir /path/to/save] [--txome] [--profile sge] [--cleanup] [--refetch] [--non-interactive] [--clean] [--dry-run] [--debug] [--version]"
+USAGE="Usage: bash run_pipeline.sh [requests.csv] [--outdir /path/to/save] [--no-txome] [--profile sge] [--cleanup] [--refetch] [--non-interactive] [--clean] [--dry-run] [--debug] [--version]"
 
 # Parse command line arguments
 while [[ "$#" -gt 0 ]]; do
@@ -75,10 +75,12 @@ while [[ "$#" -gt 0 ]]; do
             # fetched; this is for the case where a copy in the vault is suspect.
             REFETCH=1
             ;;
-        --txome)
-            # Also derive a transcriptome for each requested genome that has an
-            # annotation, from the vault's own FASTA and GTF (the fasta_txome asset).
-            TXOME=1
+        --no-txome)
+            # Skip the transcriptome. Every run otherwise derives one for each
+            # requested genome that has an annotation, from the vault's own FASTA
+            # and GTF (the fasta_txome asset). There is no --txome flag to turn it
+            # on, because it is on.
+            TXOME=0
             ;;
         --profile)
             # An extra Nextflow profile, added to conda. Checked against a plain
@@ -402,9 +404,13 @@ if [ "$REFETCH" -eq 1 ]; then
     echo "[Step 2] --refetch: every request will be downloaded, whatever the vault holds."
     NF_ARGS+=(--preflight false)
 fi
+# Said explicitly in both directions, so the wrapper decides and a changed default
+# in nextflow.config cannot quietly alter what this script does.
 if [ "$TXOME" -eq 1 ]; then
-    echo "[Step 2] --txome: a transcriptome will be derived for each annotated genome that lacks one."
     NF_ARGS+=(--txome true)
+else
+    echo "[Step 2] --no-txome: no transcriptomes will be derived."
+    NF_ARGS+=(--txome false)
 fi
 if [ "$DEBUG" -eq 1 ]; then
     echo "[Step 2] Debug mode: streaming per-task progress."

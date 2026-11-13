@@ -3,12 +3,13 @@
 </p>
 
 
-This project provides an automated workflow for downloading bioinformatics reference datasets - genomic DNA sequence (FASTA) and gene annotation (GTF) - for multiple species, and cataloguing them in a [refgenie](http://refgenie.databio.org/) vault.
+This project provides an automated workflow for downloading bioinformatics reference datasets - genomic DNA sequence (FASTA) and gene annotation (GTF) - for multiple species, cataloguing them in a [refgenie](http://refgenie.databio.org/) vault, and deriving a transcriptome for each from the two.
 
-It runs in **three stages**, wrapped by a single script:
+It runs in **four stages**, wrapped by a single script:
 1. **Resolve** - an interactive Python step (`resolve.py`) turns generic queries (like `grch38` or `mouse`) into exact assembly requests.
 2. **Download** - a **Nextflow** pipeline fetches the files in parallel via the **genomepy** engine, suitable for HPC compute nodes.
 3. **Catalogue** - once every download has finished, the same Nextflow run registers the results in a refgenie vault with human-readable aliases (the `REGISTER` process, which runs `update_refgenie.py`).
+4. **Derive** - for each genome with an annotation, a transcriptome is cut from the vault's own FASTA and GTF with **gffread** and registered beside them (see [Transcriptome](#transcriptome)).
 
 ## Prerequisites
 
@@ -143,6 +144,7 @@ This script will automatically:
 1. **Resolve**: Parse your `requests/requests_raw.csv`. It connects to the databases and interactively prompts you if there are multiple matches for your generic queries.
 2. **Download**: Automatically launch the Nextflow pipeline on the resolved targets using Conda. It first asks the vault which requests it already holds, and downloads only the rest (see [Genomes already in the vault](#-genomes-already-in-the-vault-are-not-downloaded-again)).
 3. **refgenie catalogue**: Finally, in the same Nextflow run, it automatically initializes a `refgenie_export.yaml` for you (if one doesn't exist yet), computes the sequence digests, and links your aliases. The downloaded source directories are **kept** unless you pass `--cleanup` (see below).
+4. **Transcriptome**: Derive a transcriptome for every genome that has an annotation and does not have one yet (see [Transcriptome](#transcriptome); `--no-txome` skips this).
 
 > **Cataloguing is part of the Nextflow run.** It used to be a separate step the wrapper ran after Nextflow returned. It is now the `REGISTER` process, with three properties worth knowing:
 >
@@ -373,12 +375,12 @@ To build it, the genome is registered with `recipes/fasta.json`, which is refgen
 
 > **Genomes already in your vault get one on their next ingest.** A genome registered before this existed has no dictionary. The next time it is ingested from a download, its `fasta` asset is rebuilt once to add it; for a human genome that is a few minutes. The sequence digest, aliases and annotations are unchanged. A genome whose download is no longer available is left as it is, with a warning.
 
-### Transcriptome (optional)
+### Transcriptome
 
-Pass `--txome` and each requested genome that has an annotation also gets a transcriptome, as the asset `fasta_txome`:
+Every run also gives each requested genome that has an annotation a transcriptome, as the asset `fasta_txome`. There is nothing to ask for; it is part of a run. To leave it out, pass `--no-txome`:
 
 ```bash
-bash run_pipeline.sh requests/requests_raw.csv --txome
+bash run_pipeline.sh requests/requests_raw.csv --no-txome
 ```
 
 ```bash
@@ -401,7 +403,7 @@ What you get, and what to know about it:
 - **`<alias>.provenance.json`** in the asset records the gffread version, the command and the transcript count.
 - **The file is called `<alias>.fa`**, the same name as the genome's FASTA one directory over (`alias/human/fasta_txome/116/human.fa` and `alias/human/fasta/default/human.fa`). Tell them apart by the directory.
 
-It runs after registration, so it also works on genomes already in the vault: nothing is downloaded, and only missing transcriptomes are derived. A genome requested with `annotation=false` gets none. If an annotation's contig names do not match its genome, the derivation fails saying so, and nothing is registered.
+It runs after registration, so it also covers genomes already in the vault: a vault built before transcriptomes existed, or with `--no-txome`, gains them on its next ordinary run. Nothing is downloaded for that, and only missing transcriptomes are derived. A genome requested with `annotation=false` gets none. If an annotation's contig names do not match its genome, the derivation fails saying so, and nothing is registered.
 
 No aligner or quantifier indexes are built. An index depends on a tool version and on choices such as k-mer size, which belong to an analysis, not to a reference.
 
@@ -410,7 +412,7 @@ No aligner or quantifier indexes are built. An index depends on a tool version a
 `--profile sge` adds a scheduler profile for the UCL Research Computing clusters (Myriad, Kathleen, Young) on top of conda:
 
 ```bash
-bash run_pipeline.sh requests/requests_raw.csv --txome --profile sge
+bash run_pipeline.sh requests/requests_raw.csv --profile sge
 ```
 
 Only the transcriptome derivation is submitted as a job. Everything else stays on the machine you launched from, for a reason each:
@@ -508,7 +510,7 @@ Two operational notes:
   - **Failed downloads are retried**, twice by default, with at most four downloads running at once. Previously the first failure ended the run and killed every other download in progress. See *Failed downloads are retried*.
   - **Cataloguing moved into Nextflow.** The wrapper's third step is now the `REGISTER` process, which starts when every download has finished and reads each one as a task input instead of from the copy published under `--outdir`. `--cleanup` therefore no longer publishes sources and then deletes them; it does not publish them. `bin/update_refgenie.py` can still be run by hand against an existing download tree, and gains `--source` and `--manifest`.
   - **Every genome has a sequence dictionary**, beside its FASTA under every alias, so `refgenie seek <genome>/fasta` is usable as a GATK or Picard reference directly. It is a fourth file in the `fasta` asset (`recipes/fasta.json`), and genomes already in a vault gain one on their next ingest. See *Sequence dictionary*.
-  - **Transcriptomes, on request (`--txome`).** Derived from the vault's own genome and GTF with gffread, registered as `fasta_txome` and tagged with the annotation release, with both inputs recorded as parents. Never a provider's cDNA download. See *Transcriptome*.
+  - **Every run derives a transcriptome** for each annotated genome (`--no-txome` to skip). Derived from the vault's own genome and GTF with gffread, registered as `fasta_txome` and tagged with the annotation release, with both inputs recorded as parents. Never a provider's cDNA download. See *Transcriptome*.
   - **An `sge` profile (`--profile sge`)** for the UCL clusters, ported from rnaseq-flow. Only the transcriptome derivation is submitted; downloads and registration stay on the launching machine. See *Running on an SGE cluster*.
   - **A preflight asks the vault before downloading.** Requests the vault already satisfies are skipped, so re-runs no longer depend on Nextflow's `work/` cache surviving. An unpinned annotation is fetched again when the provider publishes a newer release, and gains a tag. `--refetch` downloads everything regardless. See *Genomes already in the vault are not downloaded again*.
   - **An alias, once granted, stays.** Re-ingesting a genome used to leave it with only the aliases of the request that ingested it last: `refgenie build` resets a genome's alias list on every call. An alias given by an earlier request file vanished from the config, with its links still on disk. The ingest now records the list before each build and restores it.

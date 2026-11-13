@@ -542,7 +542,8 @@ workflow {
 
         REGISTER(file(params.input, checkIfExists: true), vault, downloads_ch)
 
-        // Transcriptomes, when asked for. REGISTER's manifest lists every requested
+        // Transcriptomes: part of every run unless `--txome false` turns them off.
+        // REGISTER's manifest lists every requested
         // genome that is in the vault, with the annotation release the row means
         // and the releases a transcriptome already exists for. So this covers a
         // genome downloaded in this run and one that has been in the vault for
