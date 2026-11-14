@@ -68,6 +68,7 @@ The tests need no network and no extra packages. Run them with the pipeline's ow
 - `tests/test_preflight.py` covers which requests the vault already satisfies, with the provider's "current release" supplied by the test.
 - `tests/test_download.py` covers the download record, with the download itself replaced.
 - `tests/test_resources.py` covers third-party resources: the registry, the fetch step with the network replaced, and the check of a resource against a genome.
+- `tests/test_vault_crate.py` covers the vault's RO-Crate, built from a hand-written vault.
 - `tests/test_ingest_e2e.py` builds a real refgenie vault from 40-base toy genomes: one assembly from two providers, plus an older pinned release. It is skipped, with the reason printed, where refgenie or `samtools` is missing or the filesystem has no symlinks.
 - `tests/test_nextflow_stub.py` executes `main.nf`. Most of it uses `nextflow run -stub`, which replaces the download with a toy assembly directory and leaves everything around it real: request validation, the duplicate guard, the publish layout. The `Registration` tests run the whole thing, download and catalogue, in one Nextflow run, with and without `--cleanup`. The retry tests run the real script with a `python3` that only fails. It is skipped where `nextflow` is not on `PATH`, and takes about four minutes.
 
@@ -90,7 +91,8 @@ nextflow run main.nf -stub -profile standard --input requests/requests_resolved.
 │   ├── register_asset.py    # Registers a transcriptome or a resource (REGISTER_ASSET)
 │   ├── resource_registry.py # Reads the resource descriptions in resources/
 │   ├── resolve.py           # Interactive resolver: generic queries to exact assemblies
-│   └── update_refgenie.py   # Registers downloads in the refgenie vault (REGISTER)
+│   ├── update_refgenie.py   # Registers downloads in the refgenie vault (REGISTER)
+│   └── vault_crate.py       # Describes the vault as an RO-Crate (ro-crate-metadata.json)
 ├── conf/
 │   └── sge.config           # Scheduler profile for the UCL clusters
 ├── data/
@@ -378,11 +380,38 @@ The counts are there because a checksum that differs tells you nothing else. Two
 
 If part of the record cannot be collected, the download still succeeds and the missing part is named under `provenance_errors`.
 
-`<outdir>/provenance/index.tsv` is a plain-text table of the whole vault, one line per record: each genome's digest and aliases, its provider, assembly, annotation release and accession, when it was retrieved, the two content checksums, and every asset and tag it holds. It is rewritten from the vault on every run, so it answers "what is in here?" without refgenie:
+`<outdir>/provenance/index.tsv` is a plain-text table of the whole vault, one line per record: each genome's digest and aliases, its provider, assembly, annotation release and accession, when it was retrieved, the two content checksums, and every asset and tag it holds. It is rewritten from the vault after every registration, so it answers "what is in here?" without refgenie:
 
 ```bash
 column -t -s $'\t' /path/to/outdir/provenance/index.tsv | less -S
 ```
+
+### The vault as an RO-Crate (`ro-crate-metadata.json`)
+
+The records above are written for this pipeline. `<outdir>/ro-crate-metadata.json` says the standard part of them in a vocabulary other tools already read: [RO-Crate](https://www.researchobject.org/ro-crate/), which is schema.org as JSON-LD. A repository, a FAIR assessment or someone else's script can find out what the vault holds and what made it without knowing anything about refdata-flow.
+
+| In the crate | Is |
+|---|---|
+| The vault | the root dataset |
+| Each genome | a `Dataset`, `data/<digest>/`, with its digest as identifier and its aliases as alternate names |
+| Each asset at each tag | a `Dataset`, `data/<digest>/<asset>/<tag>/`, linked to the assets it was built from |
+| Each file | a `File`, with its size, its format, and a checksum where one was recorded |
+| Each download, each transcriptome derivation, each resource fetch | a `CreateAction`: the tool and its version, what it read, what it produced, when it finished |
+
+It does not replace the `provenance.json` files. They stay as they are, each is listed in the crate as a file describing its asset, and they remain the only place for what has no standard term: the summary of an annotation, what the check of a resource against its genome found.
+
+Three things to know when reading it:
+
+- **It is rebuilt from the vault after every registration and never edited**, like the index. Only files that are on disk are listed, and an unchanged vault gives the same file byte for byte.
+- **A missing `sha256` means "not recorded", not "not checked".** A checksum is given only where the pipeline recorded one that applies to the stored bytes: the genome FASTA, the annotation as delivered, and a resource stored exactly as published. Nothing is hashed to fill the field in. A genome registered before the download record held checksums has none until it is fetched again (`--refetch`); the same goes for its source addresses and retrieval time.
+- **It declares RO-Crate 1.1 with the Process Run Crate profile 0.5.** Both have newer editions. These are the ones the reference validator can check, and the crate passes every required check of both:
+
+```bash
+pip install roc-validator          # not a dependency of the pipeline; any environment will do
+rocrate-validator validate -p process-run-crate-0.5 -l required /path/to/outdir
+```
+
+At `-l recommended` the validator reports more, and none of it is fixed by guessing. It asks for things the pipeline does not know: who ran each step (`agent`), who authored and publishes the vault, an end time for steps that recorded none, and a web address that identifies each tool at its exact version. It also reports each step's `actionStatus`, which the crate writes as a link, the way the RO-Crate specification's own examples do, and which the validator compares with a piece of text.
 
 > **Which variant of the assembly you get.** The pipeline takes genomepy's defaults and does not currently expose a switch for either: sequence is **soft-masked** (repeats in lowercase) where the provider offers a masked file, and for providers that distinguish them it is the **primary assembly** rather than toplevel, so alt haplotypes and patch scaffolds are excluded. For Ensembl human that means `GRCh38.p14` names the assembly correctly while the file itself holds 194 sequences: 25 chromosomes plus unplaced scaffolds, no alts. This matters if you intended alt-aware alignment, or if a tool treats lowercase as masked-out. Both settings are recorded in `provenance.json`, under `install_arguments`, with the number of sequences that resulted.
 
@@ -432,6 +461,7 @@ If the release cannot be identified - an unreachable provider, say - the asset i
 ```text
 <outdir>/
 ├── refgenie_export.yaml            <-- The master database index
+├── ro-crate-metadata.json          <-- The vault described as an RO-Crate
 │
 ├── data/                           <-- The vault. Files are named by digest, not by assembly.
 │   └── 89c2a7e1.../                <-- sequence-collection digest (truncated here for width)
@@ -633,6 +663,7 @@ Two operational notes:
   - **A genome can be requested by address** (provider `url`), for the ones no provider's catalogue lists: analysis-set genomes, the Broad's assembly38. The row names the genome and gives the file's address; an annotation is given by address too. See *A genome that no provider lists*.
   - **The download record says what was downloaded.** `provenance.json` gains source URLs, the assembly accession and taxon, the masking and alt-contig settings, SHA-256 checksums of each file and of its contents, a summary of the annotation, tool versions and a UTC timestamp. It used to hold the four request fields and a local-time stamp. See *The download record*.
   - **The record lives in the vault**, as the `provenance` asset, tagged by annotation release and reachable by every alias. The NCBI assembly report, which maps each sequence's name between naming schemes, is kept beside it as `assembly_report`. `<outdir>/provenance/index.tsv` lists the whole vault as a plain table.
+  - **The vault describes itself as an RO-Crate.** `<outdir>/ro-crate-metadata.json` lists every genome, asset and file, and each download, derivation and fetch as a `CreateAction` (RO-Crate 1.1, Process Run Crate 0.5). The `provenance.json` files are unchanged and are listed in it. The crate and `index.tsv` are now rewritten after every registration; the index used to be written once, before transcriptomes and resources were added, so its `assets` column missed whatever the same run registered afterwards. See *The vault as an RO-Crate*.
   - **Every run derives a transcriptome** for each annotated genome (`--no-txome` to skip). Derived from the vault's own genome and GTF with gffread, registered as `fasta_txome` and tagged with the annotation release, with both inputs recorded as parents. Never a provider's cDNA download. See *Transcriptome*.
   - **An `sge` profile (`--profile sge`)** for the UCL clusters, ported from rnaseq-flow. Only the transcriptome derivation is submitted; downloads and registration stay on the launching machine. See *Running on an SGE cluster*.
   - **A preflight asks the vault before downloading.** Requests the vault already satisfies are skipped, so re-runs no longer depend on Nextflow's `work/` cache surviving. An unpinned annotation is fetched again when the provider publishes a newer release, and gains a tag. `--refetch` downloads everything regardless. See *Genomes already in the vault are not downloaded again*.

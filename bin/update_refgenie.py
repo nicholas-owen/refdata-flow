@@ -1464,12 +1464,20 @@ def main():
         logger.error("--source '%s' matches no row in '%s'", key, resolved_csv)
         all_problems.append(f"source '{key}' matches no request and was not ingested")
 
-    # The plain-text index of the vault, rebuilt from the vault itself.
+    # The plain-text index of the vault and its RO-Crate, both rebuilt from the
+    # vault itself. register_asset.py rewrites them again after each asset it adds.
     try:
         write_vault_index(outdir, config_file, logger)
     except Exception as e:
         logger.error("Could not write the vault index: %s", e)
         all_problems.append(f"vault index not written ({e})")
+    try:
+        # Imported here because vault_crate imports this module.
+        import vault_crate
+        vault_crate.write_vault_crate(outdir, config_file, logger)
+    except Exception as e:
+        logger.error("Could not write the vault's RO-Crate: %s", e)
+        all_problems.append(f"RO-Crate not written ({e})")
 
     # Written whether or not there were problems: it lists what IS in the vault,
     # and the exit code below says whether that is everything that was asked for.

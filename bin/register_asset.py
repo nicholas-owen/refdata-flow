@@ -10,7 +10,7 @@ process - a transcriptome today. The split mirrors the workflow: deriving is
 heavy and runs wherever the profile sends it; registering is a few file copies
 that must happen one at a time, on the machine that holds the vault.
 
-It does four things, and the last three are the reason it is not a bare
+It does five things, and the last four are the reason it is not a bare
 `refgenie build`:
 
   1. Builds <genome>/<asset>:<tag> from the files it is given, with a recipe from
@@ -22,6 +22,8 @@ It does four things, and the last three are the reason it is not a bare
      was derived from (update_refgenie.should_become_default).
   4. Refreshes the alias links, so the asset is reachable under every name the
      genome has and not only the one it was built under.
+  5. Rewrites the vault's index and its RO-Crate, which describe everything the
+     vault holds and so are out of date the moment it holds one more thing.
 """
 import argparse
 import os
@@ -31,6 +33,7 @@ import sys
 import yaml
 
 import update_refgenie as vault
+import vault_crate
 
 
 def find_digest(config, genome):
@@ -134,6 +137,17 @@ def main():
 
     vault.relink_aliases(config_file, args.genome, logger)
     logger.info("Registered '%s'", target)
+
+    # The index and the crate describe the whole vault, so both are rewritten now
+    # that it holds one more asset. Left to update_refgenie alone they would be
+    # stale for everything registered after the genomes in the same run.
+    try:
+        vault.write_vault_index(args.outdir, config_file, logger)
+        vault_crate.write_vault_crate(args.outdir, config_file, logger)
+    except Exception as e:
+        logger.error("Registered '%s', but could not rewrite the vault's index and "
+                     "RO-Crate: %s", target, e)
+        sys.exit(1)
 
 
 if __name__ == "__main__":

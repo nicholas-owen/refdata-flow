@@ -528,6 +528,26 @@ class Resources(NextflowTestCase):
         self.assertEqual(self.submitted("REGISTER_ASSET", result.stdout),
                          ["toyAsm_ensembl/blacklist:stub1", "toyAsm_ensembl/clinvar:stub1",
                           "toyAsm_ensembl/fasta_txome:110", "toyAsm_ensembl/fasta_txome:999"])
+
+        # The index and the RO-Crate describe the vault as the run LEFT it: with
+        # what REGISTER_ASSET added, not only what REGISTER wrote before that.
+        with open(os.path.join(outdir, "provenance", "index.tsv")) as f:
+            index = f.read()
+        for held in ("blacklist:stub1", "clinvar:stub1", "fasta_txome:110,999"):
+            self.assertIn(held, index)
+        with open(os.path.join(outdir, "ro-crate-metadata.json")) as f:
+            graph = json.load(f)["@graph"]
+        actions = [e["@id"] for e in graph if e["@type"] == "CreateAction"]
+        self.assertEqual(sorted(a.split("-")[1] for a in actions if a.startswith("#fetch-")),
+                         ["blacklist", "clinvar"])
+        self.assertEqual(len([a for a in actions if a.startswith("#derive-")]), 2)
+        self.assertTrue([a for a in actions if a.startswith("#download-")])
+        files = [e for e in graph if e["@type"] == "File"]
+        self.assertTrue(any(e["@id"].endswith(".vcf.gz.tbi") for e in files))
+        for entity in files:
+            path = os.path.join(outdir, entity["@id"])
+            self.assertTrue(os.path.isfile(path), entity["@id"])
+            self.assertEqual(entity["contentSize"], str(os.path.getsize(path)), entity["@id"])
         assets = load_vault(outdir)["toyAsm_ensembl"]["assets"]
         self.assertTrue({"clinvar", "blacklist", "fasta_txome"} <= set(assets))
 

@@ -73,6 +73,32 @@ def fake_download(directory, contig_prefix, release, kind, identity=None):
                    "annotation_release_kind": kind, **(identity or {})}, f)
 
 
+def ids(value):
+    """The @id of each reference in a crate property, which may hold one or many."""
+    return [item["@id"] for item in (value if isinstance(value, list) else [value])]
+
+
+def read_crate(test, outdir):
+    """
+    The vault's RO-Crate as {@id: entity}, after checking it against the disk:
+    every file it names is there, at the size it states, and any checksum it gives
+    is that file's.
+    """
+    with open(os.path.join(outdir, "ro-crate-metadata.json")) as f:
+        entities = {entity["@id"]: entity for entity in json.load(f)["@graph"]}
+    files = [e for e in entities.values() if e["@type"] == "File"]
+    test.assertTrue(files, "the crate lists no files")
+    for entity in files:
+        path = os.path.join(outdir, entity["@id"])
+        test.assertTrue(os.path.isfile(path), entity["@id"])
+        test.assertEqual(entity["contentSize"], str(os.path.getsize(path)), entity["@id"])
+        if "sha256" in entity:
+            with open(path, "rb") as f:
+                test.assertEqual(entity["sha256"], hashlib.sha256(f.read()).hexdigest(),
+                                 entity["@id"])
+    return entities
+
+
 @unittest.skipIf(missing_requirement(), missing_requirement())
 class ToyVault(unittest.TestCase):
     @classmethod
@@ -244,6 +270,26 @@ class ToyVault(unittest.TestCase):
                 self.assertIn("ensembl_gtf:110,116", row["assets"].split(";"))
             self.assertIn("fasta:default", row["assets"].split(";"))
 
+    def test_14_crate_at_the_vault_root_describes_what_is_on_disk(self):
+        entities = read_crate(self, self.outdir)
+        genomes = self.genomes()
+        self.assertEqual(sorted(ids(entities["./"]["hasPart"])),
+                         sorted(f"data/{digest}/" for digest in genomes))
+        ensembl = next(d for d, g in genomes.items() if "mouse_ens" in g["aliases"])
+        self.assertEqual(entities[f"data/{ensembl}/"]["alternateName"],
+                         sorted(genomes[ensembl]["aliases"]))
+        # Both releases of the annotation, each its own dataset and its own download.
+        for release in ("110", "116"):
+            self.assertIn(f"data/{ensembl}/ensembl_gtf/{release}/", entities)
+        downloads = [e for e in entities.values() if e["@type"] == "CreateAction"]
+        self.assertEqual(len(downloads), 3)
+        self.assertEqual(sorted(ids(entities["./"]["mentions"])),
+                         sorted(e["@id"] for e in downloads))
+        for action in downloads:
+            results = ids(action["result"])
+            self.assertTrue(any(r.endswith(".fa") for r in results), results)
+            self.assertTrue(any(r.endswith(".gtf.gz") for r in results), results)
+
     # -- a second ingest, with cleanup -----------------------------------------
     # Named to sort after everything above: it removes the download directories.
 
@@ -358,6 +404,26 @@ class RegisterDerivedAsset(unittest.TestCase):
                 self.assertEqual(f.readline().strip(), ">t1")
         with open(self.seek("mouse/fasta_txome.provenance")) as f:
             self.assertEqual(json.load(f)["annotation"], "ensembl_gtf:116")
+
+    def test_index_and_crate_are_rewritten_to_include_the_new_asset(self):
+        # Both describe the whole vault, and until now only the ingest wrote them.
+        with open(os.path.join(self.outdir, "provenance", "index.tsv"), newline="") as f:
+            self.assertNotIn("fasta_txome", f.read())
+        self.assertEqual(self.register("116").returncode, 0)
+        digest, _ = self.txome()
+        with open(os.path.join(self.outdir, "provenance", "index.tsv"), newline="") as f:
+            rows = list(csv.DictReader(f, delimiter="\t"))
+        for row in rows:
+            self.assertIn("fasta_txome:116", row["assets"].split(";"))
+        entities = read_crate(self, self.outdir)
+        txome = entities[f"data/{digest}/fasta_txome/116/"]
+        self.assertEqual(sorted(ids(txome["isBasedOn"])),
+                         [f"data/{digest}/ensembl_gtf/116/", f"data/{digest}/fasta/default/"])
+        derivation, = [e for e in entities.values() if e["@id"].startswith("#derive-")]
+        self.assertEqual(sorted(ids(derivation["object"])),
+                         [f"data/{digest}/ensembl_gtf/116/{digest}.gtf.gz",
+                          f"data/{digest}/fasta/default/{digest}.fa"])
+        self.assertIn(f"data/{digest}/fasta_txome/116/{digest}.fa", ids(derivation["result"]))
 
     def test_both_inputs_are_recorded_as_parents(self):
         self.assertEqual(self.register("116").returncode, 0)
