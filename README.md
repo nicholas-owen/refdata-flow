@@ -403,7 +403,7 @@ It does not replace the `provenance.json` files. They stay as they are, each is 
 Three things to know when reading it:
 
 - **It is rebuilt from the vault after every registration and never edited**, like the index. Only files that are on disk are listed, and an unchanged vault gives the same file byte for byte.
-- **A missing `sha256` means "not recorded", not "not checked".** A checksum is given only where the pipeline recorded one that applies to the stored bytes: the genome FASTA, the annotation as delivered, and a resource stored exactly as published. Nothing is hashed to fill the field in. A genome registered before the download record held checksums has none until it is fetched again (`--refetch`); the same goes for its source addresses and retrieval time.
+- **A missing `sha256` means "not recorded", not "not checked".** A checksum is given only where the pipeline recorded one that applies to the stored bytes: the genome FASTA, the annotation as delivered, and a resource stored exactly as published. Nothing is hashed to fill the field in. A genome registered before the download record held checksums has none, nor source addresses or a retrieval time, and `--refetch` does not add them: the vault keeps a genome's files and its record from the download that first supplied them. Only a vault built afresh gets the full record for such a genome.
 - **It declares RO-Crate 1.1 with the Process Run Crate profile 0.5.** Both have newer editions. These are the ones the reference validator can check, and the crate passes every required check of both:
 
 ```bash
