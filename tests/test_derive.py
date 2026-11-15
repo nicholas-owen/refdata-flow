@@ -155,6 +155,66 @@ class Annotation(ScriptTestCase):
         self.assertEqual(self.record("derived", "refflat.provenance.json")["gene_column"],
                          "gene_id")
 
+    def test_transcript_id_used_on_two_sequences_gets_a_model_on_each(self):
+        # RefSeq has pseudo-autosomal genes on X and on Y under one accession. An
+        # annotation that keeps it that way stops gtfToGenePred alone, with "all
+        # group members must be on same seq".
+        shox = attributes("SHOX", "NM_000451.4", "SHOX")
+        gtf = "".join([
+            f"X\tsrc\ttranscript\t11\t40\t.\t+\t.\t{shox}\n",
+            f"X\tsrc\texon\t11\t40\t.\t+\t.\t{shox}\n",
+            f"Y\tsrc\ttranscript\t21\t50\t.\t+\t.\t{shox}\n",
+            f"Y\tsrc\texon\t21\t50\t.\t+\t.\t{shox}\n",
+            f"X\tsrc\texon\t61\t80\t.\t-\t.\t{attributes('g2', 't2')}\n",
+        ])
+        result = self.derive(gtf)
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn("used at more than one place", result.stdout)
+        self.assertEqual(self.lines("derived", "tx2gene.tsv"),
+                         ["NM_000451.4\tSHOX\tSHOX", "t2\tg2\tg2"])
+        self.assertEqual(self.lines("derived", "transcripts.bed"), [
+            "X\t10\t40\tNM_000451.4\t0\t+\t40\t40\t0\t1\t30,\t0,",
+            "X\t60\t80\tt2\t0\t-\t80\t80\t0\t1\t20,\t0,",
+            "Y\t20\t50\tNM_000451.4\t0\t+\t50\t50\t0\t1\t30,\t0,",
+        ])
+        self.assertEqual([line.split("\t")[:3] for line in self.lines("derived", "refFlat.txt")],
+                         [["SHOX", "NM_000451.4", "X"], ["g2", "t2", "X"],
+                          ["SHOX", "NM_000451.4", "Y"]])
+        record = self.record("derived", "bed12.provenance.json")
+        self.assertEqual((record["models"], record["transcripts_in_annotation"],
+                          record["transcript_ids_at_more_than_one_place"]), (3, 2, 1))
+        # The mark that told the two apart is nowhere in what was written.
+        for name in os.listdir(self.path("derived")):
+            if not name.endswith((".gz", ".tbi")):
+                with open(self.path("derived", name)) as f:
+                    self.assertNotIn("~locus", f.read(), name)
+
+    def test_transcript_id_used_twice_on_one_sequence_is_two_models_not_one_long_one(self):
+        # Told apart by the second `transcript` line; merged, they would be a single
+        # transcript with a 60-base intron that no annotation describes.
+        twice = attributes("g1", "NM_1.1")
+        gtf = "".join([
+            f"1\tsrc\ttranscript\t1\t20\t.\t+\t.\t{twice}\n",
+            f"1\tsrc\texon\t1\t20\t.\t+\t.\t{twice}\n",
+            f"1\tsrc\ttranscript\t81\t100\t.\t+\t.\t{twice}\n",
+            f"1\tsrc\texon\t81\t100\t.\t+\t.\t{twice}\n",
+        ])
+        self.assertEqual(self.derive(gtf).returncode, 0)
+        self.assertEqual(self.lines("derived", "transcripts.bed"), [
+            "1\t0\t20\tNM_1.1\t0\t+\t20\t20\t0\t1\t20,\t0,",
+            "1\t80\t100\tNM_1.1\t0\t+\t100\t100\t0\t1\t20,\t0,",
+        ])
+        self.assertEqual(self.lines("derived", "tx2gene.tsv"), ["NM_1.1\tg1\tg1"])
+
+    def test_transcript_whose_own_line_follows_its_exons_is_still_one_model(self):
+        late = attributes("g1", "t1")
+        gtf = (f"1\tsrc\texon\t1\t20\t.\t+\t.\t{late}\n"
+               f"1\tsrc\ttranscript\t1\t20\t.\t+\t.\t{late}\n")
+        self.assertEqual(self.derive(gtf).returncode, 0)
+        self.assertEqual(len(self.lines("derived", "transcripts.bed")), 1)
+        self.assertEqual(
+            self.record("derived", "bed12.provenance.json")["transcript_ids_at_more_than_one_place"], 0)
+
     def test_attribute_that_only_ends_in_gene_id_is_not_taken_for_it(self):
         gtf = ('1\tsrc\texon\t1\t9\t.\t+\t.\tref_gene_id "WRONG"; gene_id "g1"; '
                'transcript_id "t1"; ref_gene_name "WRONG";\n')

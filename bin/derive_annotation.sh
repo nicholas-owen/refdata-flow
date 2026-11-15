@@ -38,6 +38,14 @@
 #     UCSC convention - and what RSeQC reads - is an empty range for a transcript
 #     with no CDS.
 #
+#   * A transcript_id used at more than one place gets a BED12 and a refFlat line
+#     for each place, under the same id, and one tx2gene line. gtfToGenePred stops
+#     at the first such id, so the places are told apart for it and put back under
+#     one name afterwards. genomepy's own UCSC and NCBI annotations never arrive
+#     like this - genePredToGtf has already renamed the later places (NM_000451.4
+#     on chrX, NM_000451.4_2 on chrY; 11,456 such names in hg38's ncbiRefSeq) -
+#     but an annotation given by address can.
+#
 #   * The sort is stable and by sequence name then start only, so lines that start
 #     together keep the order the provider wrote them in: a gene stays ahead of
 #     its transcripts, and a transcript ahead of its exons.
@@ -83,11 +91,20 @@ conda_version() {  # package, a binary it provides
 mkdir -p "$out"
 gzip -dcf "$gtf" > annotation.gtf
 
-# ---- tx2gene -----------------------------------------------------------------
-# One line per transcript_id, in the order the GTF first names it. Read from every
-# line that carries one, not only `transcript` lines: a GTF built from UCSC's
-# tables may have none.
-awk -F'\t' '
+# ---- tx2gene, and the GTF the gene models are built from ------------------------
+# One pass over the annotation writes both.
+#
+# tx2gene: one line per transcript_id, in the order the GTF first names it. Read
+# from every line that carries one, not only `transcript` lines: a GTF built from
+# UCSC's tables may have none.
+#
+# models.gtf: the lines that belong to a transcript, with one change. Where a
+# transcript_id is used at a second place, the lines there get a marked id
+# (NM_000451.4~locus2), so gtfToGenePred sees two transcripts instead of one that
+# is in two places, which it refuses; the mark is taken off again afterwards. A
+# second place is a second `transcript` line for the id, or a line for it on
+# another sequence or strand.
+awk -F'\t' -v OFS='\t' -v table="$out/tx2gene.tsv" -v counts=loci.txt '
     function attribute(text, key,    value) {
         if (!match(text, "(^|;)[ ]*" key " \"[^\"]+\"")) return ""
         value = substr(text, RSTART, RLENGTH)
@@ -98,12 +115,35 @@ awk -F'\t' '
     /^#/ || NF < 9 { next }
     {
         transcript = attribute($9, "transcript_id")
-        if (transcript == "" || (transcript in seen)) next
-        seen[transcript] = 1
-        gene = attribute($9, "gene_id")
-        name = attribute($9, "gene_name")
-        print transcript "\t" gene "\t" (name == "" ? gene : name)
-    }' annotation.gtf > "$out/tx2gene.tsv"
+        if (transcript == "") next
+        here = $1 SUBSEP $7
+        fresh = 0
+        if (!(transcript in locus)) {
+            locus[transcript] = 1
+            fresh = 1
+            gene = attribute($9, "gene_id")
+            name = attribute($9, "gene_name")
+            print transcript, gene, (name == "" ? gene : name) > table
+        } else if (($3 == "transcript" && opened[transcript]) || here != place[transcript]) {
+            if (locus[transcript] == 1) repeated++
+            locus[transcript]++
+            extra++
+            fresh = 1
+        }
+        if (fresh) { place[transcript] = here; opened[transcript] = 0 }
+        if ($3 == "transcript") opened[transcript] = 1
+        if (locus[transcript] > 1) {
+            key = "transcript_id \"" transcript "\""
+            at = index($9, key)
+            $9 = substr($9, 1, at - 1) "transcript_id \"" transcript "~locus" locus[transcript] "\"" \
+                 substr($9, at + length(key))
+        }
+        print
+    }
+    END { print repeated + 0, extra + 0 > counts }' annotation.gtf > models.gtf
+: >> "$out/tx2gene.tsv"     # exists even when no line carried a transcript_id
+repeated=$(cut -f 1 loci.txt)
+loci_extra=$(cut -f 2 loci.txt)
 
 transcripts=$(wc -l < "$out/tx2gene.tsv" | tr -d ' ')
 genes=$(cut -f 2 "$out/tx2gene.tsv" | sort -u | wc -l | tr -d ' ')
@@ -135,23 +175,30 @@ fi
 # -genePredExt adds the gene_id as column 12. -ignoreGroupsWithoutExons: a
 # transcript with no exon line has no model to write, and without the flag one
 # such transcript stops the whole conversion.
-gtfToGenePred -genePredExt -ignoreGroupsWithoutExons annotation.gtf annotation.genePred
+gtfToGenePred -genePredExt -ignoreGroupsWithoutExons models.gtf marked.genePred
+awk -F'\t' -v OFS='\t' '{ sub(/~locus[0-9]+$/, "", $1); print }' marked.genePred > annotation.genePred
 genePredToBed annotation.genePred unsorted.bed
 sort -t "$tab" -k1,1 -k2,2n -k3,3n -k4,4 unsorted.bed > "$out/transcripts.bed"
 awk -F'\t' 'BEGIN { OFS = "\t" } { print $12, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10 }' annotation.genePred \
     | sort -t "$tab" -k3,3 -k5,5n -k6,6n -k2,2 > "$out/refFlat.txt"
 
+# A model per place a transcript is annotated: the transcripts, plus one for each
+# further place an id is used at.
 models=$(wc -l < "$out/transcripts.bed" | tr -d ' ')
+expected=$((transcripts + loci_extra))
 if [ "$models" -eq 0 ]; then
     echo "[$genome] ERROR: gtfToGenePred wrote no gene models from $annotation_asset:$release." >&2
     exit 1
 fi
-if [ "$models" -gt "$transcripts" ]; then
-    echo "[$genome] ERROR: $models gene models from $transcripts transcripts in $annotation_asset:$release." >&2
+if [ "$models" -gt "$expected" ]; then
+    echo "[$genome] ERROR: $models gene models where $annotation_asset:$release has $expected to make." >&2
     exit 1
 fi
-if [ "$models" -ne "$transcripts" ]; then
-    echo "[$genome] WARNING: $((transcripts - models)) of $transcripts transcripts in $annotation_asset:$release have no exon line and so no gene model. They are in tx2gene and absent from bed12 and refflat." >&2
+if [ "$models" -ne "$expected" ]; then
+    echo "[$genome] WARNING: $((expected - models)) of $expected transcript models in $annotation_asset:$release have no exon line and were not written. Their transcripts are in tx2gene and absent from bed12 and refflat." >&2
+fi
+if [ "$repeated" -ne 0 ]; then
+    echo "[$genome] NOTE: $repeated transcript id(s) in $annotation_asset:$release are used at more than one place ($loci_extra further place(s) in all). bed12 and refflat have a line for each place under the same id; tx2gene has the id once."
 fi
 
 # ---- the records ---------------------------------------------------------------
@@ -171,9 +218,9 @@ record gtf_indexed htslib "${htslib_version:-unknown}" \
     "\"records\": $records, \"sequences\": $sequences"
 record bed12 genePredToBed "$ucsc_version" \
     "gtfToGenePred -genePredExt -ignoreGroupsWithoutExons ANNOTATION.gtf A.genePred; genePredToBed A.genePred; sort -k1,1 -k2,2n" \
-    "\"transcripts\": $models, \"transcripts_in_annotation\": $transcripts"
+    "\"models\": $models, \"transcripts_in_annotation\": $transcripts, \"transcript_ids_at_more_than_one_place\": $repeated"
 record refflat gtfToGenePred "$ucsc_version" \
     "gtfToGenePred -genePredExt -ignoreGroupsWithoutExons ANNOTATION.gtf A.genePred; columns 12,1-10; sort -k3,3 -k5,5n" \
-    "\"gene_column\": \"gene_id\", \"transcripts\": $models, \"transcripts_in_annotation\": $transcripts"
+    "\"gene_column\": \"gene_id\", \"models\": $models, \"transcripts_in_annotation\": $transcripts, \"transcript_ids_at_more_than_one_place\": $repeated"
 
 echo "[$genome] $annotation_asset:$release -> $transcripts transcripts of $genes genes; $models gene models; $records GTF records on $sequences sequences"
