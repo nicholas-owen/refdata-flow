@@ -95,6 +95,31 @@ def holds(assets, String asset, String tag) {
     }
 }
 
+// The databases a run was asked for: the `database` column of a small CSV file.
+//
+// A database belongs to no genome, so it has no row in the request file, which is
+// a list of genomes. It gets a list of its own, one name per line under a
+// `database` header; lines starting with # are comments. '' or no file means none.
+// Each name is checked in the workflow block against the definitions in databases/.
+def requestedDatabases(path) {
+    def text = (path ?: '').toString().trim()
+    if( !text )
+        return []
+    def lines = file(text, checkIfExists: true).readLines()
+        .collect { line -> line.trim() }
+        .findAll { line -> line && !line.startsWith('#') }
+    if( !lines )
+        return []
+    def column = lines[0].split(',').collect { cell -> cell.trim().toLowerCase() }.indexOf('database')
+    if( column < 0 )
+        error "The databases file '${text}' needs a header line with a 'database' column"
+    return lines.drop(1)
+        .collect { line -> line.split(',', -1) }
+        .findAll { cells -> cells.size() > column && cells[column].trim() }
+        .collect { cells -> cells[column].trim() }
+        .unique()
+}
+
 process FETCH_GENOME {
     tag "${species}_${assembly}"
 
@@ -427,22 +452,6 @@ process DERIVE_TXOME {
     """
 }
 
-// Fetch a third-party resource - ClinVar, the ENCODE blacklist - for a genome
-// already in the vault. What can be fetched, and from where, is described by the
-// files in resources/; see bin/resource_registry.py.
-//
-// bin/fetch_resource.py works out the published version before downloading and
-// fetches only when the vault does not already hold it, so this task is cheap on
-// every run but the first. It then verifies the file against the publisher's
-// checksum where one is posted. `fetched/` always comes out: holding either the
-// file and its fetch record, or a file called SKIP, which the workflow filters on.
-//
-// Like FETCH_GENOME it needs the network, carries the 'network' label, and is
-// retried the same way. Its report is always shown.
-//
-// The stub writes a two-line file on the genome's first sequence, so that the
-// real compatibility check which follows has something true to pass; it reports
-// SKIP when the genome already holds the resource, as the real script would.
 // The small files pipelines ask for alongside a GTF, derived from one annotation:
 // tx2gene, a sorted and indexed GTF, BED12 and refFlat. One task makes all four,
 // because all four start by reading the same GTF and three of them share a
@@ -519,13 +528,49 @@ process DERIVE_TWOBIT {
     """
 }
 
+// Fetch a third-party resource - ClinVar, the ENCODE blacklist, the GATK
+// known-sites files, dbSNP, a VEP cache - for a genome already in the vault. What
+// can be fetched, and from where, is described by the files in resources/; see
+// bin/resource_registry.py.
+//
+// bin/fetch_resource.py works out the published version before downloading and
+// fetches only when the vault does not already hold it, so this task is cheap on
+// every run but the first. It then verifies the file against the publisher's
+// checksum where one is posted. `fetched/` always comes out: holding either the
+// file and its fetch record, or a file called SKIP, which the workflow filters on.
+//
+// `annotation` is the genome's annotation as asset:release, and is empty for
+// every resource but one that is published per annotation release (a VEP cache),
+// whose version it decides.
+//
+// `asked` is not used by the script. run_pipeline.sh always passes -resume, and
+// a task whose inputs are the same as last time is then replayed from the cache
+// without running. For a download that is what is wanted. For the answer "the
+// vault's copy is still current" it is wrong: the question is put to the
+// publisher, and the publisher may have moved on (ClinVar does, weekly). So when
+// the genome already holds some version - the only case in which that answer can
+// be given - `asked` is the time this run started, which no earlier task shares,
+// and the script runs. When nothing is held it is empty, and a finished download
+// stays cached until it has been registered.
+//
+// Like FETCH_GENOME it needs the network, carries the 'network' label, and is
+// retried the same way - except exit 3, which is the script saying the request
+// cannot be met however often it is tried (no room for the file, no annotation
+// release to follow). Its report is always shown.
+//
+// The stub writes a two-line file on the genome's first sequence, so that the
+// real compatibility check which follows has something true to pass; it reports
+// SKIP when the genome already holds the resource, as the real script would. For
+// a resource that has to be renamed it names that sequence the RefSeq way and
+// writes the one-line table that maps it back; for a VEP cache it packs a
+// directory per sequence, tagged with the annotation release.
 process FETCH_RESOURCE {
     tag "${name}:${variant} for ${genome}"
     label 'network'
     debug true
 
     errorStrategy {
-        if( task.attempt > asInt(params.max_retries, 'max_retries') )
+        if( task.exitStatus == 3 || task.attempt > asInt(params.max_retries, 'max_retries') )
             return 'finish'
         sleep(asInt(params.retry_wait, 'retry_wait') * 1000L * task.attempt)
         return 'retry'
@@ -533,7 +578,7 @@ process FETCH_RESOURCE {
     maxRetries(params.max_retries.toString().trim().isInteger() ? params.max_retries.toString().trim().toInteger() : 0)
 
     input:
-    tuple val(genome), val(name), val(variant), val(held), path(chrom_sizes), path(registry)
+    tuple val(genome), val(name), val(variant), val(held), val(annotation), val(asked), path(chrom_sizes), path(registry)
 
     output:
     tuple val(genome), val(name), val(variant), path(chrom_sizes), path(registry), path('fetched')
@@ -542,18 +587,50 @@ process FETCH_RESOURCE {
     def release_flag = isTrue(params.check_releases) ? '' : '--no-release-check'
     """
     fetch_resource.py --registry "${registry}" --variant "${variant}" --genome "${genome}" \\
-        --held "${held}" --outdir fetched ${release_flag}
+        --held "${held}" --annotation "${annotation}" --outdir fetched ${release_flag}
     """
 
     stub:
+    def release = annotation.toString().tokenize(':').size() == 2 ? annotation.toString().tokenize(':')[1] : ''
     """
     mkdir -p fetched
+    if grep -q '"kind": *"vep_cache"' "${registry}"; then
+        if [ -z "${release}" ]; then
+            echo "ERROR: ${name}:${variant} follows an annotation release, and ${genome} was requested without one." >&2
+            exit 3
+        fi
+        case ",${held}," in
+            *",${release},"*)
+                echo "stub: ${name}:${variant} is already held (${held})" > fetched/SKIP
+                echo "  SKIP   ${name}:${variant} for ${genome}: held (${held})"
+                exit 0 ;;
+        esac
+        root=cache/stub_species/${release}_stub
+        mkdir -p "\$root"
+        printf 'species\\tstub_species\\nassembly\\tstub\\n' > "\$root/info.txt"
+        cut -f 1 "${chrom_sizes}" | while read -r contig; do
+            mkdir -p "\$root/\$contig"
+            printf 'stub\\n' | gzip -nc > "\$root/\$contig/1-1000000.gz"
+        done
+        tar -czf "fetched/${name}.tar.gz" -C cache stub_species
+        printf '{"stub": true, "resource": "%s", "variant": "%s", "url": "stub", "version": "%s", "file": "%s"}\\n' \\
+            "${name}" "${variant}" "${release}" "${name}.tar.gz" > "fetched/${name}.fetch.json"
+        echo "  FETCH  ${name}:${variant} for ${genome} (stub)"
+        exit 0
+    fi
     if [ -n "${held}" ]; then
         echo "stub: ${name}:${variant} is already held (${held})" > fetched/SKIP
         echo "  SKIP   ${name}:${variant} for ${genome}: held (${held})"
         exit 0
     fi
     contig=\$(head -n 1 "${chrom_sizes}" | cut -f 1)
+    names=''
+    if grep -q '"rename"' "${registry}"; then
+        printf '# Sequence-Name\\tSequence-Role\\tAssigned-Molecule\\tAssigned-Molecule-Location/Type\\tGenBank-Accn\\tRelationship\\tRefSeq-Accn\\tAssembly-Unit\\tSequence-Length\\tUCSC-style-name\\n%s\\tassembled-molecule\\t1\\tChromosome\\tGB_STUB.1\\t=\\tNC_STUB.1\\tPrimary Assembly\\t%s\\tna\\n' \\
+            "\$contig" "\$(head -n 1 "${chrom_sizes}" | cut -f 2)" > "fetched/${name}.names.txt"
+        names=', "names_report": {"url": "stub", "file": "${name}.names.txt"}'
+        contig=NC_STUB.1
+    fi
     if grep -q '"kind": *"vcf"' "${registry}"; then
         file=${name}.vcf.gz
         printf '##fileformat=VCFv4.1\\n##source=stub\\n#CHROM\\tPOS\\tID\\tREF\\tALT\\tQUAL\\tFILTER\\tINFO\\n%s\\t5\\t.\\tA\\tC\\t.\\t.\\t.\\n%s\\t9\\t.\\tG\\tT\\t.\\t.\\t.\\n' "\$contig" "\$contig" \\
@@ -562,8 +639,8 @@ process FETCH_RESOURCE {
         file=${name}.bed.gz
         printf '%s\\t1\\t5\\tstub\\n' "\$contig" | gzip -nc > "fetched/\$file"
     fi
-    printf '{"stub": true, "resource": "%s", "variant": "%s", "url": "stub", "version": "stub1", "file": "%s"}\\n' \\
-        "${name}" "${variant}" "\$file" > "fetched/${name}.fetch.json"
+    printf '{"stub": true, "resource": "%s", "variant": "%s", "url": "stub", "version": "stub1", "file": "%s"%s}\\n' \\
+        "${name}" "${variant}" "\$file" "\$names" > "fetched/${name}.fetch.json"
     echo "  FETCH  ${name}:${variant} for ${genome} (stub)"
     """
 }
@@ -621,6 +698,11 @@ process REGISTER_ASSET {
     val vault
     tuple val(genome), val(asset), val(asset_tag), val(file_keys), path(files), val(parents)
 
+    // Nothing is made of this but a signal: the databases are filed once every
+    // one of these tasks has finished (see FILE_DATABASE).
+    output:
+    val genome
+
     script:
     def staged = files instanceof List ? files : [files]
     def file_args = (0..<file_keys.size()).collect { i -> "--file '${file_keys[i]}=${staged[i]}'" }.join(' ')
@@ -629,6 +711,94 @@ process REGISTER_ASSET {
     export PATH="${params.venv_bin}:\$PATH"
     register_asset.py "${vault}" --genome "${genome}" --asset "${asset}" --tag "${asset_tag}" \\
         ${file_args} ${parent_args}
+    """
+}
+
+// Fetch a database that belongs to no genome - Swiss-Prot, Pfam, SILVA, a Kraken2
+// index - as described by its file in databases/. bin/fetch_database.py is
+// bin/fetch_resource.py without a genome: the published version is worked out
+// first and nothing is fetched when the tree already holds it, and the file is
+// verified against the publisher's checksum where there is one.
+//
+// `asked` does here what it does in FETCH_RESOURCE: once some version is in the
+// tree the publisher is asked again on every run, and never answered from the cache.
+//
+// The stub writes a one-record FASTA, or for a database that is published as an
+// archive a two-file tarball, so that the real filing step has both shapes to file.
+process FETCH_DATABASE {
+    tag "${name}"
+    label 'network'
+    debug true
+
+    errorStrategy {
+        if( task.exitStatus == 3 || task.attempt > asInt(params.max_retries, 'max_retries') )
+            return 'finish'
+        sleep(asInt(params.retry_wait, 'retry_wait') * 1000L * task.attempt)
+        return 'retry'
+    }
+    maxRetries(params.max_retries.toString().trim().isInteger() ? params.max_retries.toString().trim().toInteger() : 0)
+
+    input:
+    tuple val(name), val(held), val(asked), path(definition)
+
+    output:
+    tuple val(name), path('fetched')
+
+    script:
+    def release_flag = isTrue(params.check_releases) ? '' : '--no-release-check'
+    """
+    fetch_database.py --definition "${definition}" --held "${held}" --outdir fetched ${release_flag}
+    """
+
+    stub:
+    """
+    mkdir -p fetched
+    if [ -n "${held}" ]; then
+        echo "stub: ${name} is already held (${held})" > fetched/SKIP
+        echo "  SKIP   ${name}: held (${held})"
+        exit 0
+    fi
+    if grep -q '"unpack": *"tar"' "${definition}"; then
+        mkdir -p packed
+        printf 'stub\\n' > packed/hash.k2d
+        printf 'stub\\n' > packed/taxo.k2d
+        file=${name}.tar.gz
+        tar -czf "fetched/\$file" -C packed .
+        unpack='"tar"'
+    else
+        file=${name}.fasta.gz
+        printf '>stub\\nACGT\\n' | gzip -nc > "fetched/\$file"
+        unpack=null
+    fi
+    printf '{"stub": true, "database": "%s", "url": "stub", "version": "stub1", "file": "%s", "unpack": %s, "terms": "https://example.org/terms"}\\n' \\
+        "${name}" "\$file" "\$unpack" > "fetched/${name}.fetch.json"
+    echo "  FETCH  ${name} (stub)"
+    """
+}
+
+// File a fetched database under <outdir>/databases/<name>/<version>/ and rewrite
+// the catalogue beside it. bin/file_database.py has the rules; refgenie plays no
+// part, because nothing here has a genome to hang from.
+//
+// Like the registration steps it runs on the launching machine, one at a time,
+// and is never cached. It also rewrites the vault's RO-Crate, which is why its
+// input waits for every REGISTER_ASSET task: two steps each rebuilding that one
+// file from what is on disk must not overlap, or the slower one writes back a
+// description that is already out of date.
+process FILE_DATABASE {
+    tag "${name}"
+    maxForks 1
+    cache false
+    debug true
+
+    input:
+    val vault
+    tuple val(name), path(fetched)
+
+    script:
+    """
+    export PATH="${params.venv_bin}:\$PATH"
+    file_database.py "${vault}" --name "${name}" --fetched "${fetched}"
     """
 }
 
@@ -805,6 +975,12 @@ workflow {
         // Third-party resources, for the rows that ask for any. One task per
         // genome and resource; `held` is the versions of it the genome already
         // has, which is what lets the fetch step skip a download.
+        //
+        // A resource published per annotation release (a VEP cache) is one task
+        // per genome, resource AND release: the row's annotation goes with it and
+        // decides its version, so a genome held at two releases gets a cache for
+        // each. For every other resource the annotation is left out, and two rows
+        // for one genome still make one task.
         REGISTER.out.manifest
             .splitCsv(header: true, sep: '\t')
             .filter { row -> row.resources && row.chrom_sizes }
@@ -817,12 +993,15 @@ workflow {
                     def held = have ? have.substring(name.size() + 1) : ''
                     if( held && !(held ==~ /^[A-Za-z0-9._,-]+$/) )
                         error "Unsafe characters in the versions held of '${name}': '${held}'"
-                    tuple(safe(row.vault_name, 'vault_name'), name, variant, held,
-                          file(row.chrom_sizes),
-                          file("${projectDir}/resources/${name}.json", checkIfExists: true))
+                    def registry = file("${projectDir}/resources/${name}.json", checkIfExists: true)
+                    def annotation = ''
+                    if( registry.text.contains('"annotation_release"') && row.annotation_asset && row.annotation_tag )
+                        annotation = "${safe(row.annotation_asset, 'annotation_asset')}:${safe(row.annotation_tag, 'annotation_tag')}".toString()
+                    tuple(safe(row.vault_name, 'vault_name'), name, variant, held, annotation,
+                          held ? workflow.start.toString() : '', file(row.chrom_sizes), registry)
                 }
             }
-            .unique { item -> "${item[0]}/${item[1]}".toString() }
+            .unique { item -> "${item[0]}/${item[1]}/${item[4]}".toString() }
             .set { resource_ch }
 
         FETCH_RESOURCE(resource_ch)
@@ -922,5 +1101,43 @@ workflow {
         }
 
         REGISTER_ASSET(vault, txome_assets_ch.mix(resource_assets_ch).mix(derived_assets_ch))
+
+        // Databases that belong to no genome, for a run given a list of them.
+        // Each name must have a definition in databases/. `held` is the versions
+        // already in the tree: a directory counts once it has its record, which
+        // is the last thing the filing step writes.
+        def databases = requestedDatabases(params.databases).collect { name ->
+            def definition = file("${projectDir}/databases/${safe(name, 'database')}.json")
+            if( !definition.exists() ) {
+                def known = file("${projectDir}/databases").listFiles()
+                    .findAll { item -> item.name.endsWith('.json') }
+                    .collect { item -> item.name - '.json' }.sort().join(', ')
+                error "Unknown database '${name}' in '${params.databases}' (known: ${known})"
+            }
+            def versions = file("${vault}/databases/${name}")
+            def held = !versions.isDirectory() ? '' : versions.listFiles()
+                .findAll { item -> item.isDirectory() && !item.name.startsWith('.') && file("${item}/provenance.json").exists() }
+                .collect { item -> item.name }.sort().join(',')
+            if( held && !(held ==~ /^[A-Za-z0-9._,-]+$/) )
+                error "Unsafe characters in the versions held of database '${name}': '${held}'"
+            tuple(name, held, held ? workflow.start.toString() : '', definition)
+        }
+
+        if( databases ) {
+            FETCH_DATABASE(channel.fromList(databases))
+
+            // Filed only when every registration has finished: see FILE_DATABASE.
+            // toList() emits once, with an empty list when nothing was registered.
+            FETCH_DATABASE.out
+                .filter { _name, fetched -> !file("${fetched}/SKIP").exists() }
+                .combine(REGISTER_ASSET.out.toList().map { _done -> true })
+                .map { name, fetched, _ready -> tuple(name, fetched) }
+                .set { fetched_databases_ch }
+
+            FILE_DATABASE(vault, fetched_databases_ch)
+        }
+    }
+    else if( requestedDatabases(params.databases) ) {
+        error "Databases are filed beside the vault by the registration steps, so --databases cannot be combined with --register false"
     }
 }

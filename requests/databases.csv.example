@@ -1,0 +1,12 @@
+# Databases that belong to no genome, one per line under the header.
+# Copy this file to requests/databases.csv and delete the lines you do not want;
+# run_pipeline.sh reads it from there on every run. Each name is a file in
+# databases/, which says where it comes from and how it is versioned.
+#
+#   swissprot          UniProtKB/Swiss-Prot FASTA, about 90 MB
+#   pfam               Pfam-A HMMs, about 660 MB
+#   silva              SILVA 138.2 SSU Ref NR99 FASTA, about 200 MB
+#   kraken2_viral      Kraken 2 viral index, about 570 MB packed
+#   kraken2_standard   Kraken 2 standard index, about 69 GB packed
+database
+swissprot

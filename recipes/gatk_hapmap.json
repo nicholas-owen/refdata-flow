@@ -1,0 +1,37 @@
+{
+  "name": "gatk_hapmap",
+  "description": "The HapMap 3.3 sites of the GATK resource bundle for hg38, with a tabix index built on arrival and a record of the fetch. The tag is the Broad's own name for this edition of the bundle (v0). Registered only after its contigs and coordinates were checked against this genome's own sequence names and lengths (bin/prepare_resource.py); what that check found is in the asset's provenance file. The VCF is byte-for-byte the published file, verified against the md5 that Google Cloud Storage sends with it.",
+  "required_files": [
+    {
+      "key": "gatk_hapmap",
+      "description": "the bgzipped VCF"
+    },
+    {
+      "key": "tbi",
+      "description": "its tabix index"
+    },
+    {
+      "key": "provenance",
+      "description": "the fetch record and compatibility summary"
+    }
+  ],
+  "required_assets": [
+    {
+      "key": "genome_fasta",
+      "default": "fasta",
+      "description": "the genome whose coordinates the variants are in"
+    }
+  ],
+  "required_parameters": [],
+  "container": "databio/refgenie",
+  "assets": {
+    "gatk_hapmap": "{genome}.vcf.gz",
+    "tbi": "{genome}.vcf.gz.tbi",
+    "provenance": "{genome}.provenance.json"
+  },
+  "command_list": [
+    "cp {gatk_hapmap} {asset_outfolder}/{genome}.vcf.gz",
+    "cp {tbi} {asset_outfolder}/{genome}.vcf.gz.tbi",
+    "cp {provenance} {asset_outfolder}/{genome}.provenance.json"
+  ]
+}

@@ -119,7 +119,11 @@ def main():
     with open(config_file, "r") as f:
         config = yaml.safe_load(f) or {}
     digest = find_digest(config, args.genome)
-    if not vault.asset_file(config, config_file, digest, args.asset, args.tag, args.asset):
+    # A file for most assets; for one that is a tree (an unpacked VEP cache), the
+    # directory with something unpacked in it.
+    if not (vault.asset_file(config, config_file, digest, args.asset, args.tag, args.asset)
+            or vault.asset_directory(config, config_file, digest, args.asset, args.tag,
+                                     args.asset)):
         logger.error("'%s' is listed in the config but its file is not in the vault",
                      target)
         sys.exit(1)

@@ -1,0 +1,9 @@
+{
+  "name": "kraken2_viral",
+  "description": "A prebuilt Kraken 2 and Bracken index, the viral index: RefSeq viral genomes only, as built on 2024-12-28 and distributed by the Langmead lab. Unpacked, so the directory is what Kraken 2 takes as --db. A later build is a new address here.",
+  "terms": "https://benlangmead.github.io/aws-indexes/k2",
+  "url": "https://genome-idx.s3.amazonaws.com/kraken/k2_viral_20241228.tar.gz",
+  "version": "20241228",
+  "unpack": "tar",
+  "size": "about 570 MB packed"
+}

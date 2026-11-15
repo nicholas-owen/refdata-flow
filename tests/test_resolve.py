@@ -395,11 +395,11 @@ class ResourcesColumn(ResolverTestCase):
 
     def test_unknown_resource_fails_the_row_before_any_search(self):
         code, rows, err = self.resolve(
-            ["Homo_sapiens,GRCh38,ensembl,TRUE,human,,,,dbsnp:GRCh38"], header=self.HEADER)
+            ["Homo_sapiens,GRCh38,ensembl,TRUE,human,,,,gnomad:GRCh38"], header=self.HEADER)
         self.assertEqual(code, resolve.EXIT_UNRESOLVED)
         self.assertEqual(rows, [])
         self.assertEqual(self.searched, [])
-        self.assertIn("unknown resource 'dbsnp'", err)
+        self.assertIn("unknown resource 'gnomad'", err)
 
     def test_build_the_resource_is_not_published_for_fails_the_row(self):
         code, _, err = self.resolve(

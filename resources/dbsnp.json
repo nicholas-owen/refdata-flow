@@ -1,0 +1,36 @@
+{
+  "name": "dbsnp",
+  "description": "dbSNP, NCBI's catalogue of short human variants, as its VCF for one genome build. Pinned to build 157 in dbSNP's archive, which is not replaced; a later build is a new address here.",
+  "kind": "vcf",
+  "index": "tabix",
+  "terms": "https://www.ncbi.nlm.nih.gov/home/about/policies/",
+  "min_matched": 0.9,
+  "variants": {
+    "GRCh38": {
+      "url": "https://ftp.ncbi.nih.gov/snp/archive/b157/VCF/GCF_000001405.40.gz",
+      "version": "b157",
+      "checksum": {
+        "type": "md5",
+        "url": "https://ftp.ncbi.nih.gov/snp/archive/b157/VCF/GCF_000001405.40.gz.md5"
+      },
+      "rename": {
+        "report": "https://ftp.ncbi.nlm.nih.gov/genomes/all/GCF/000/001/405/GCF_000001405.40_GRCh38.p14/GCF_000001405.40_GRCh38.p14_assembly_report.txt"
+      },
+      "size": "about 30 GB, and as much again while it is being renamed",
+      "naming": "Published with RefSeq accessions (NC_000001.11) and rewritten to this genome's own names through NCBI's assembly report for GRCh38.p14. Fits any GRCh38 genome, however it names its sequences. About 6% of its records are on patches and alternate loci that a primary assembly does not have; they keep their RefSeq names."
+    },
+    "GRCh37": {
+      "url": "https://ftp.ncbi.nih.gov/snp/archive/b157/VCF/GCF_000001405.25.gz",
+      "version": "b157",
+      "checksum": {
+        "type": "md5",
+        "url": "https://ftp.ncbi.nih.gov/snp/archive/b157/VCF/GCF_000001405.25.gz.md5"
+      },
+      "rename": {
+        "report": "https://ftp.ncbi.nlm.nih.gov/genomes/all/GCF/000/001/405/GCF_000001405.25_GRCh37.p13/GCF_000001405.25_GRCh37.p13_assembly_report.txt"
+      },
+      "size": "about 28 GB, and as much again while it is being renamed",
+      "naming": "Published with RefSeq accessions (NC_000001.10) and rewritten to this genome's own names through NCBI's assembly report for GRCh37.p13."
+    }
+  }
+}

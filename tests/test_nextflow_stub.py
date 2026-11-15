@@ -17,6 +17,7 @@ through `#!/usr/bin/env python3`, so that stands in for a download failing.
 Needs `nextflow` on PATH. Skipped with a reason when it is not; each run costs a
 JVM start, so this file takes a minute or so.
 """
+import gzip
 import json
 import os
 import shutil
@@ -554,6 +555,158 @@ class Resources(NextflowTestCase):
             self.assertEqual(entity["contentSize"], str(os.path.getsize(path)), entity["@id"])
         assets = load_vault(outdir)["toyAsm_ensembl"]["assets"]
         self.assertTrue({"clinvar", "blacklist", "fasta_txome"} <= set(assets))
+
+
+@unittest.skipIf(ingest_unavailable(), ingest_unavailable())
+class ReshapedResourcesAndDatabases(NextflowTestCase):
+    """
+    The resources that are not one file stored as fetched, and the databases tree.
+
+    dbSNP has to be renamed before it fits, and a VEP cache is a directory that
+    follows the annotation release. Under -stub the fetch writes a file named the
+    RefSeq way with the table that maps it back, and a cache with a directory per
+    sequence; the renaming, both checks, the unpacking and the filing are real.
+    """
+
+    HEADER = HEADER.rstrip("\n") + ",url,annotation_url,resources\n"
+    REQUESTS = (HEADER
+                + "Mus_musculus,toyAsm,Ensembl,TRUE,toyAsm,,mouse_ens,,,vep_cache:GRCm39;dbsnp:GRCh38\n"
+                + "Mus_musculus,toyAsm,Ensembl,TRUE,toyAsm,110,mouse_ens,,,vep_cache:GRCm39;dbsnp:GRCh38\n"
+                + "Foo_bar,seqOnly,NCBI,false,seqOnly,,,,,\n")
+    DATABASES = "# what this run should hold\ndatabase\nswissprot\nkraken2_viral\n"
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        cls.outdir = os.path.join(cls.work, "out")
+        cls.requests = cls.write_requests("requests_resolved.csv", cls.REQUESTS)
+        cls.databases = cls.write_requests("databases.csv", cls.DATABASES)
+        cls.run_result = cls.nextflow(cls.requests, cls.outdir, "--databases", cls.databases,
+                                      register=True)
+
+    def submitted(self, process, output=None):
+        return sorted(line.split(f"{process} (")[1].rstrip(")")
+                      for line in (output or self.run_result.stdout).splitlines()
+                      if f"Submitted process > {process} (" in line)
+
+    def test_01_run_succeeds(self):
+        self.assertEqual(self.run_result.returncode, 0, self.run_result.stdout[-3000:])
+
+    def test_02_a_cache_is_fetched_per_annotation_release_and_dbsnp_once(self):
+        self.assertEqual(self.submitted("FETCH_RESOURCE"),
+                         ["dbsnp:GRCh38 for toyAsm_ensembl", "vep_cache:GRCm39 for toyAsm_ensembl",
+                          "vep_cache:GRCm39 for toyAsm_ensembl"])
+        self.assertEqual(self.submitted("REGISTER_ASSET"),
+                         ["toyAsm_ensembl/dbsnp:stub1", "toyAsm_ensembl/vep_cache:110",
+                          "toyAsm_ensembl/vep_cache:999"])
+
+    def test_03_cache_is_unpacked_in_the_vault_and_reachable_as_a_directory(self):
+        cache = load_vault(self.outdir)["toyAsm_ensembl"]["assets"]["vep_cache"]
+        self.assertEqual(str(cache["default_tag"]), "999")
+        self.assertEqual(cache["tags"]["999"]["seek_keys"]["vep_cache"], ".")
+        self.assertEqual([p.split("/")[1] for p in cache["tags"]["999"]["asset_parents"]],
+                         ["fasta:default"])
+        for release in ("110", "999"):
+            directory = os.path.join(self.outdir, "alias", "mouse_ens", "vep_cache", release)
+            root = os.path.join(directory, "stub_species", f"{release}_stub")
+            self.assertTrue(os.path.isfile(os.path.join(root, "info.txt")), root)
+            self.assertEqual(sorted(name for name in os.listdir(root) if name != "info.txt"),
+                             ["1", "2", "Un_toyAsm"])
+            self.assertTrue(os.path.isfile(os.path.join(root, "1", "1-1000000.gz")))
+            # The tarball itself is not kept beside what was unpacked from it.
+            self.assertEqual(sorted(os.listdir(directory)),
+                             ["_refgenie_build", "mouse_ens.provenance.json", "stub_species"])
+        seek = subprocess.run(
+            [sys.executable, REFGENIE, "seek", "mouse_ens/vep_cache", "-c",
+             os.path.join(self.outdir, "refgenie_export.yaml")],
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL).stdout.strip()
+        self.assertTrue(os.path.isdir(os.path.join(seek, "stub_species", "999_stub")), seek)
+
+    def test_04_dbsnp_is_stored_under_the_genomes_own_sequence_names(self):
+        directory = os.path.join(self.outdir, "alias", "mouse_ens", "dbsnp", "stub1")
+        with gzip.open(os.path.join(directory, "mouse_ens.vcf.gz"), "rt") as f:
+            records = [line.split("\t")[0] for line in f if not line.startswith("#")]
+        self.assertEqual(records, ["1", "1"])
+        self.assertTrue(os.path.isfile(os.path.join(directory, "mouse_ens.vcf.gz.tbi")))
+        with open(os.path.join(directory, "mouse_ens.provenance.json")) as f:
+            record = json.load(f)
+        self.assertEqual(record["renamed"]["records_renamed"], 2)
+        self.assertEqual(record["renamed"]["examples"], {"NC_STUB.1": "1"})
+        self.assertFalse(record["stored_as_published"])
+
+    def test_05_databases_are_filed_beside_the_vault_with_a_catalogue(self):
+        self.assertEqual(self.submitted("FETCH_DATABASE"), ["kraken2_viral", "swissprot"])
+        self.assertEqual(self.submitted("FILE_DATABASE"), ["kraken2_viral", "swissprot"])
+        tree = os.path.join(self.outdir, "databases")
+        self.assertEqual(sorted(os.listdir(os.path.join(tree, "swissprot", "stub1"))),
+                         ["provenance.json", "swissprot.fasta.gz"])
+        # Published as an archive, so unpacked: the directory is what a tool is given.
+        self.assertEqual(sorted(os.listdir(os.path.join(tree, "kraken2_viral", "stub1"))),
+                         ["hash.k2d", "provenance.json", "taxo.k2d"])
+        with open(os.path.join(tree, "databases.tsv")) as f:
+            lines = f.read().splitlines()
+        self.assertEqual([line.split("\t")[:3] for line in lines[1:]],
+                         [["kraken2_viral", "stub1", "databases/kraken2_viral/stub1/"],
+                          ["swissprot", "stub1", "databases/swissprot/stub1/"]])
+
+    def test_06_crate_holds_the_databases_and_the_registrations_that_ran_beside_them(self):
+        with open(os.path.join(self.outdir, "ro-crate-metadata.json")) as f:
+            graph = {entity["@id"]: entity for entity in json.load(f)["@graph"]}
+        actions = sorted(key for key, entity in graph.items() if entity["@type"] == "CreateAction")
+        self.assertEqual([a for a in actions if a.startswith("#fetch-database-")],
+                         ["#fetch-database-kraken2_viral-stub1", "#fetch-database-swissprot-stub1"])
+        self.assertEqual(sorted(a.split("-")[1] for a in actions
+                                if a.startswith("#fetch-") and "database" not in a),
+                         ["dbsnp", "vep_cache", "vep_cache"])
+        # A cache is described as its directory, and not file by file.
+        fetch = next(graph[a] for a in actions if a.startswith("#fetch-vep_cache-") and a.endswith("-999"))
+        directory = fetch["result"][0]["@id"]
+        self.assertTrue(directory.endswith("/vep_cache/999/"), directory)
+        self.assertFalse(any("stub_species" in key for key in graph))
+        for key, entity in graph.items():
+            if entity["@type"] == "File":
+                self.assertTrue(os.path.isfile(os.path.join(self.outdir, key)), key)
+
+    def test_07_second_run_fetches_registers_and_files_nothing(self):
+        result = self.nextflow(self.requests, self.outdir, "--databases", self.databases,
+                               register=True)
+        self.assertEqual(result.returncode, 0, result.stdout[-3000:])
+        self.assertEqual(result.stdout.count("  SKIP   vep_cache:GRCm39"), 2)
+        self.assertEqual(result.stdout.count("  SKIP   dbsnp:GRCh38"), 1)
+        self.assertEqual(result.stdout.count("  SKIP   swissprot"), 1)
+        self.assertEqual(result.stdout.count("  SKIP   kraken2_viral"), 1)
+        for process in ("PREPARE_RESOURCE", "REGISTER_ASSET", "FILE_DATABASE"):
+            self.assertNotIn(f"Submitted process > {process}", result.stdout)
+
+    def test_07b_resumed_run_asks_the_publishers_again(self):
+        # run_pipeline.sh always passes -resume. This run's fetch tasks have the
+        # same genome, resource and versions held as the run before it, and would
+        # be replayed from the cache - "still current", unasked - if nothing told
+        # them apart. A publisher's new release would then never be seen.
+        result = self.nextflow(self.requests, self.outdir, "--databases", self.databases,
+                               "-resume", register=True)
+        self.assertEqual(result.returncode, 0, result.stdout[-3000:])
+        self.assertEqual(len(self.submitted("FETCH_RESOURCE", result.stdout)), 3)
+        self.assertEqual(len(self.submitted("FETCH_DATABASE", result.stdout)), 2)
+        self.assertNotIn("Cached process > FETCH_", result.stdout)
+
+    def test_08_cache_for_a_genome_with_no_annotation_fails_once_and_says_why(self):
+        requests = self.write_requests(
+            "no_annotation.csv", self.HEADER + "Foo_bar,seqOnly,NCBI,false,seqOnly,,,,,vep_cache:GRCm39\n")
+        result = self.nextflow(requests, os.path.join(self.work, "none.out"), register=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("follows an annotation release", result.stdout)
+        self.assertEqual(result.stdout.count("Submitted process > FETCH_RESOURCE"), 1)
+        self.assertNotIn("Re-submitted process > FETCH_RESOURCE", result.stdout)
+
+    def test_09_database_with_no_definition_stops_the_run_before_any_task(self):
+        listed = self.write_requests("unknown.csv", "database\nswissprot\nuniref\n")
+        result = self.nextflow(self.requests, os.path.join(self.work, "unknown.out"),
+                               "--databases", listed, register=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Unknown database 'uniref'", result.stdout)
+        self.assertIn("kraken2_standard, kraken2_viral, pfam, silva, swissprot", result.stdout)
+        self.assertNotIn("Submitted process", result.stdout)
 
 
 def gffread_unavailable():

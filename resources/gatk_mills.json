@@ -1,0 +1,20 @@
+{
+  "name": "gatk_mills",
+  "description": "The Mills and 1000 Genomes gold-standard indels of the GATK resource bundle for hg38 (Mills_and_1000G_gold_standard.indels.hg38.vcf.gz), published by the Broad Institute. Known indels for base quality score recalibration, and a truth set for indel variant quality score recalibration.",
+  "kind": "vcf",
+  "index": "tabix",
+  "terms": "https://gatk.broadinstitute.org/hc/en-us/articles/360035890811-Resource-bundle",
+  "min_matched": 0.95,
+  "variants": {
+    "hg38": {
+      "url": "https://storage.googleapis.com/gcp-public-data--broad-references/hg38/v0/Mills_and_1000G_gold_standard.indels.hg38.vcf.gz",
+      "version": "v0",
+      "checksum": {
+        "type": "md5",
+        "header": "x-goog-hash"
+      },
+      "size": "about 20 MB",
+      "naming": "UCSC: chr1, chr2, chrX, as in the Broad's Homo_sapiens_assembly38.fasta. Fits that genome and a UCSC-named GRCh38 analysis set; not an Ensembl or NCBI-named one."
+    }
+  }
+}

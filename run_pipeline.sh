@@ -35,11 +35,15 @@ NONINTERACTIVE=0
 REFETCH=0
 TXOME=1
 DERIVED=1
+# Databases that belong to no genome are asked for in a list of their own. It is
+# optional: with no --databases and no file at the default place, none are fetched.
+DATABASES=""
+DEFAULT_DATABASES="requests/databases.csv"
 # Nextflow profiles. conda is always on - it supplies the tools - and --profile
 # adds to it, e.g. `--profile sge` runs with `-profile conda,sge`.
 PROFILES="conda"
 
-USAGE="Usage: bash run_pipeline.sh [requests.csv] [--outdir /path/to/save] [--no-txome] [--no-derived] [--profile sge] [--cleanup] [--refetch] [--non-interactive] [--clean] [--dry-run] [--debug] [--version]"
+USAGE="Usage: bash run_pipeline.sh [requests.csv] [--outdir /path/to/save] [--databases databases.csv] [--no-txome] [--no-derived] [--profile sge] [--cleanup] [--refetch] [--non-interactive] [--clean] [--dry-run] [--debug] [--version]"
 
 # Parse command line arguments
 while [[ "$#" -gt 0 ]]; do
@@ -75,6 +79,17 @@ while [[ "$#" -gt 0 ]]; do
             # holds. By default the vault is asked first and only what it lacks is
             # fetched; this is for the case where a copy in the vault is suspect.
             REFETCH=1
+            ;;
+        --databases)
+            # A CSV file with a `database` column: the genome-less databases to
+            # hold under <outdir>/databases/ (Swiss-Prot, Pfam, a Kraken2 index).
+            # Taken before the *.csv case below, which is the genome request file.
+            if [ -z "${2:-}" ] || [ ! -f "$2" ]; then
+                echo "Error: --databases needs the path of an existing file, e.g. --databases requests/databases.csv"
+                exit 1
+            fi
+            DATABASES="$2"
+            shift
             ;;
         --no-txome)
             # Skip the transcriptome. Every run otherwise derives one for each
@@ -424,6 +439,13 @@ if [ "$DERIVED" -eq 1 ]; then
 else
     echo "[Step 2] --no-derived: no tx2gene, indexed GTF, BED12, refFlat or .2bit will be derived."
     NF_ARGS+=(--derived false)
+fi
+if [ -z "$DATABASES" ] && [ -f "$DEFAULT_DATABASES" ]; then
+    DATABASES="$DEFAULT_DATABASES"
+fi
+if [ -n "$DATABASES" ]; then
+    echo "[Step 2] Databases listed in $DATABASES will be held under $OUTDIR/databases."
+    NF_ARGS+=(--databases "$DATABASES")
 fi
 if [ "$DEBUG" -eq 1 ]; then
     echo "[Step 2] Debug mode: streaming per-task progress."

@@ -1,0 +1,37 @@
+{
+  "name": "dbsnp",
+  "description": "dbSNP's VCF for this genome's build, with its sequence names rewritten from RefSeq accessions to the names this genome uses, a tabix index, and a record of the fetch. The tag is the dbSNP build. NCBI publishes the file with names such as NC_000001.11, which no genome in a vault uses; each was replaced through NCBI's assembly report for the build, and only where this genome's sequence of that name has the length the report gives. Nothing else in a record was changed, and a record on a sequence this genome lacks keeps its published name. The result was then checked against this genome's sequence names and lengths like any other resource (bin/prepare_resource.py). The provenance file gives the checksums of the file as published, verified against NCBI's md5, the report used, and how many records were renamed.",
+  "required_files": [
+    {
+      "key": "dbsnp",
+      "description": "the bgzipped VCF"
+    },
+    {
+      "key": "tbi",
+      "description": "its tabix index"
+    },
+    {
+      "key": "provenance",
+      "description": "the fetch record and compatibility summary"
+    }
+  ],
+  "required_assets": [
+    {
+      "key": "genome_fasta",
+      "default": "fasta",
+      "description": "the genome whose coordinates the variants are in"
+    }
+  ],
+  "required_parameters": [],
+  "container": "databio/refgenie",
+  "assets": {
+    "dbsnp": "{genome}.vcf.gz",
+    "tbi": "{genome}.vcf.gz.tbi",
+    "provenance": "{genome}.provenance.json"
+  },
+  "command_list": [
+    "cp {dbsnp} {asset_outfolder}/{genome}.vcf.gz",
+    "cp {tbi} {asset_outfolder}/{genome}.vcf.gz.tbi",
+    "cp {provenance} {asset_outfolder}/{genome}.provenance.json"
+  ]
+}

@@ -23,9 +23,15 @@ WHAT IS IN THE CRATE
       each genome             a Dataset, data/<digest>/, with its aliases
         each asset and tag    a Dataset, data/<digest>/<asset>/<tag>/
           each file           a File, with its size and format
+      each database version   a Dataset, databases/<name>/<version>/, with its
+                              file if it is kept as one file
 
     each download, each       a CreateAction: what ran (and which version), what
     derivation, each fetch    it read, what it produced, and when it finished
+
+An asset that is a tree a tool is pointed at whole - an unpacked VEP cache, a
+Kraken2 index - is described as its directory and not file by file: tens of
+thousands of entries would say nothing its one record does not.
 
 A derivation is recognised by its record, not by a list of asset names kept here:
 any asset whose provenance file names itself and a tool. What it was derived from
@@ -113,6 +119,8 @@ FORMATS = [
     (".vcf.gz", ["application/gzip"], "VCF"),
     (".gtf.gz", ["application/gzip"], "GTF"),
     (".bed.gz", ["application/gzip"], "BED"),
+    (".fasta.gz", ["application/gzip"], "FASTA"),
+    (".fa.gz", ["application/gzip"], "FASTA"),
     (".bed", ["text/plain"], "BED"),
     (".fa", ["text/plain"], "FASTA"),
     (".2bit", [], "2bit"),
@@ -121,6 +129,7 @@ FORMATS = [
     (".json", ["application/json"], None),
     (".dict", ["text/plain"], None),
     (".txt", ["text/plain"], None),
+    (".gz", ["application/gzip"], None),
 ]
 
 
@@ -195,8 +204,11 @@ def tag_directory(digest, asset, tag):
 
 def build_crate(outdir, config_file):
     """The whole crate as a dict, built from the vault's config and what is on disk."""
-    with open(config_file, "r") as f:
-        config = yaml.safe_load(f) or {}
+    # No config yet is an output directory that holds databases and no genome.
+    config = {}
+    if os.path.isfile(config_file):
+        with open(config_file, "r") as f:
+            config = yaml.safe_load(f) or {}
     genomes = config.get("genomes") or {}
     # Identifiers in a crate are paths relative to the crate's own directory, and
     # the pipeline always keeps the vault's data/ tree beside its config there.
@@ -206,6 +218,8 @@ def build_crate(outdir, config_file):
     actions, dates, genome_refs = [], [], []
     # {(digest, asset, tag): {seek key: File @id}} for files that are on disk.
     files_of = {}
+    # Assets whose own seek key is a directory, not a file.
+    trees = set()
 
     # ---- pass 1: genomes, assets, files ----------------------------------------
     for digest in sorted(genomes):
@@ -222,6 +236,9 @@ def build_crate(outdir, config_file):
                 for key, filename in sorted((tag_data.get("seek_keys") or {}).items()):
                     path = vault.asset_file(config, config_file, digest, asset, tag, key)
                     if not path:
+                        if key == asset and vault.asset_directory(
+                                config, config_file, digest, asset, tag, key):
+                            trees.add((digest, asset, tag))
                         continue
                     entity = {
                         "@id": directory + str(filename),
@@ -351,6 +368,9 @@ def build_crate(outdir, config_file):
                 data_file = file_ref(digest, asset, tag, asset)
                 if data_file and record.get("stored_as_published") and record.get("file_sha256"):
                     crate.entities[data_file["@id"]].setdefault("sha256", record["file_sha256"])
+                if data_file is None and (digest, asset, tag) in trees:
+                    # Unpacked into the vault: the result is the directory.
+                    data_file = ref(directory)
                 what = f"{record['resource']}:{record.get('variant', '')}"
                 action = {
                     "@id": f"#fetch-{asset}-{short}-{tag}",
@@ -401,6 +421,79 @@ def build_crate(outdir, config_file):
             action["result"] = [item for item in results if item]
             actions.append(crate.add(action))
 
+    # ---- databases: what belongs to no genome -----------------------------------
+    import file_database
+
+    database_refs = []
+    for name, version, record in file_database.held_records(outdir):
+        directory = f"databases/{name}/{version}/"
+        where = os.path.join(root, "databases", name, version)
+        parts = [crate.add({
+            "@id": directory + "provenance.json",
+            "@type": "File",
+            "name": "provenance.json",
+            "contentSize": str(os.path.getsize(os.path.join(where, "provenance.json"))),
+            "encodingFormat": "application/json",
+            "description": "The pipeline's own record of where this database came "
+                           "from, in full. The crate gives the standard part of it.",
+            "about": ref(directory),
+        })]
+        data_file = None
+        filename = str(record.get("file") or "")
+        if not record.get("unpacked") and filename and os.path.isfile(os.path.join(where, filename)):
+            entity = {
+                "@id": directory + filename,
+                "@type": "File",
+                "name": filename,
+                "contentSize": str(os.path.getsize(os.path.join(where, filename))),
+            }
+            formats = encoding_format(crate, filename)
+            if formats:
+                entity["encodingFormat"] = formats
+            if record.get("file_sha256"):
+                # Kept as one file, exactly as it was fetched and hashed.
+                entity["sha256"] = record["file_sha256"]
+            data_file = crate.add(entity)
+            parts.insert(0, data_file)
+        dataset = {
+            "@id": directory,
+            "@type": "Dataset",
+            "name": f"{name}:{version}",
+            "description": str(record.get("description") or f"The {name} database.")
+                           + (" Unpacked from the archive it was published as."
+                              if record.get("unpacked") else ""),
+            "version": version,
+            "hasPart": parts,
+        }
+        if record.get("terms"):
+            dataset["license"] = crate.add({
+                "@id": record["terms"], "@type": "CreativeWork",
+                "name": f"Terms of use for {name}",
+                "description": "Where the publisher states the conditions of use. "
+                               "Linked, not evaluated.",
+                "url": record["terms"]})
+        database_refs.append(crate.add(dataset))
+        action = {
+            "@id": f"#fetch-database-{name}-{version}",
+            "@type": "CreateAction",
+            "name": f"Fetch {name} {version}",
+            "description": f"refdata-flow fetched {name} at version {version}"
+                           + (" and unpacked it." if record.get("unpacked") else
+                              " and filed it as published.")
+                           + " See the record for how its checksum was verified.",
+            "instrument": crate.software("refdata-flow", ""),
+            "actionStatus": COMPLETED,
+            "result": [data_file or ref(directory), ref(directory + "provenance.json")],
+        }
+        source = crate.source(record.get("url"), record.get("description") or
+                              "The database as published.")
+        if source:
+            action["object"] = [source]
+        if record.get("retrieved_utc"):
+            action["endTime"] = record["retrieved_utc"]
+            dates.append(record["retrieved_utc"])
+        actions.append(crate.add(action))
+
     # ---- the root, and the two entities every crate has ------------------------
     licence = crate.add({
         "@id": "#terms",
@@ -422,7 +515,8 @@ def build_crate(outdir, config_file):
         published = max(dates)
     else:
         from datetime import datetime, timezone
-        published = datetime.fromtimestamp(os.path.getmtime(config_file),
+        stamped = config_file if os.path.isfile(config_file) else outdir
+        published = datetime.fromtimestamp(os.path.getmtime(stamped),
                                            timezone.utc).date().isoformat()
     root_entity = {
         "@id": "./",
@@ -430,13 +524,14 @@ def build_crate(outdir, config_file):
         "name": "Reference data vault built by refdata-flow",
         "description": "Reference genomes, their annotations, transcriptomes derived "
                        "from them and third-party resources checked against them, held "
-                       "in a refgenie vault. Each asset has a provenance.json beside it "
+                       "in a refgenie vault; and, beside it, databases that belong to "
+                       "no genome. Each has a provenance.json beside it "
                        "with the full record of where it came from; this crate carries "
                        "the part of that record that has a standard vocabulary.",
         "datePublished": published,
         "license": licence,
         "conformsTo": profile,
-        "hasPart": genome_refs,
+        "hasPart": genome_refs + database_refs,
     }
     if actions:
         root_entity["mentions"] = actions

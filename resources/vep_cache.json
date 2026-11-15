@@ -1,0 +1,38 @@
+{
+  "name": "vep_cache",
+  "description": "The Ensembl Variant Effect Predictor's indexed cache: the transcript models, regulatory features and known variants VEP annotates against, for one species and assembly at one Ensembl release.",
+  "kind": "vep_cache",
+  "index": null,
+  "terms": "https://www.ensembl.org/info/about/legal/disclaimer.html",
+  "min_matched": 0.95,
+  "variants": {
+    "GRCh38": {
+      "url": "https://ftp.ensembl.org/pub/release-{release}/variation/indexed_vep_cache/homo_sapiens_vep_{release}_GRCh38.tar.gz",
+      "version": "annotation_release",
+      "annotation": "ensembl_gtf",
+      "size": "about 28 GB packed",
+      "naming": "Ensembl: 1, 2, X, MT. Fits an Ensembl GRCh38 genome, at the release its annotation is at; not a UCSC- or NCBI-named one."
+    },
+    "GRCh37": {
+      "url": "https://ftp.ensembl.org/pub/release-{release}/variation/indexed_vep_cache/homo_sapiens_vep_{release}_GRCh37.tar.gz",
+      "version": "annotation_release",
+      "annotation": "ensembl_gtf",
+      "size": "about 25 GB packed",
+      "naming": "Ensembl: 1, 2, X, MT. Fits an Ensembl GRCh37 genome, at the release its annotation is at; not a UCSC- or NCBI-named one."
+    },
+    "GRCm39": {
+      "url": "https://ftp.ensembl.org/pub/release-{release}/variation/indexed_vep_cache/mus_musculus_vep_{release}_GRCm39.tar.gz",
+      "version": "annotation_release",
+      "annotation": "ensembl_gtf",
+      "size": "about 3 GB packed",
+      "naming": "Ensembl: 1, 2, X, MT. Fits an Ensembl GRCm39 genome, at the release its annotation is at; not a UCSC- or NCBI-named one."
+    },
+    "R64-1-1": {
+      "url": "https://ftp.ensembl.org/pub/release-{release}/variation/indexed_vep_cache/saccharomyces_cerevisiae_vep_{release}_R64-1-1.tar.gz",
+      "version": "annotation_release",
+      "annotation": "ensembl_gtf",
+      "size": "about 60 MB packed",
+      "naming": "Ensembl: I, II, XVI, Mito. Fits an Ensembl R64-1-1 genome, at the release its annotation is at; not a UCSC- or NCBI-named one."
+    }
+  }
+}

@@ -1,0 +1,31 @@
+{
+  "name": "vep_cache",
+  "description": "The Ensembl VEP indexed cache for this genome's species and assembly, at the Ensembl release of this genome's annotation, which is also the tag. Unpacked: `refgenie seek <genome>/vep_cache` is the directory to give VEP as --dir_cache, alongside --offline --cache_version <tag>. Registered only after the cache's own sequence directories were compared with this genome's sequence names and lengths (bin/prepare_resource.py), which is recorded in the asset's provenance file together with the cache's own info.txt. A cache is tied to its release: use it with the VEP of the same number.",
+  "required_files": [
+    {
+      "key": "vep_cache",
+      "description": "the cache tarball as published"
+    },
+    {
+      "key": "provenance",
+      "description": "the fetch record and compatibility summary"
+    }
+  ],
+  "required_assets": [
+    {
+      "key": "genome_fasta",
+      "default": "fasta",
+      "description": "the genome the cache's coordinates are in"
+    }
+  ],
+  "required_parameters": [],
+  "container": "databio/refgenie",
+  "assets": {
+    "vep_cache": ".",
+    "provenance": "{genome}.provenance.json"
+  },
+  "command_list": [
+    "tar -xzf {vep_cache} -C {asset_outfolder}",
+    "cp {provenance} {asset_outfolder}/{genome}.provenance.json"
+  ]
+}

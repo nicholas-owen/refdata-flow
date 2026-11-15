@@ -67,7 +67,8 @@ The tests need no network and no extra packages. Run them with the pipeline's ow
 - `tests/test_update_refgenie.py` covers the vault naming, alias and default-tag rules.
 - `tests/test_preflight.py` covers which requests the vault already satisfies, with the provider's "current release" supplied by the test.
 - `tests/test_download.py` covers the download record, with the download itself replaced.
-- `tests/test_resources.py` covers third-party resources: the registry, the fetch step with the network replaced, and the check of a resource against a genome.
+- `tests/test_resources.py` covers third-party resources: the registry, the fetch step with the network replaced, the check of a resource against a genome, the renaming of one that names its sequences differently, and the check of a VEP cache.
+- `tests/test_databases.py` covers the databases that belong to no genome: the fetch step with the network replaced, and the filing of a database beside the vault.
 - `tests/test_vault_crate.py` covers the vault's RO-Crate, built from a hand-written vault.
 - `tests/test_derive.py` runs the two derive scripts with the real tools on a hand-written annotation and genome. Skipped where the tools are missing; see below.
 - `tests/test_ingest_e2e.py` builds a real refgenie vault from 40-base toy genomes: one assembly from two providers, plus an older pinned release. It is skipped, with the reason printed, where refgenie or `samtools` is missing or the filesystem has no symlinks.
@@ -92,11 +93,13 @@ nextflow run main.nf -stub -profile standard --input requests/requests_resolved.
 │   ├── derive_annotation.sh # Makes tx2gene, the indexed GTF, BED12 and refFlat (DERIVE_ANNOTATION)
 │   ├── derive_twobit.sh     # Writes a genome as .2bit and checks it (DERIVE_TWOBIT)
 │   ├── download.py          # Fetches one genome and its annotation (FETCH_GENOME)
+│   ├── fetch_database.py    # Fetches one database that belongs to no genome (FETCH_DATABASE)
 │   ├── fetch_resource.py    # Fetches one third-party resource (FETCH_RESOURCE)
+│   ├── file_database.py     # Files a database beside the vault and rewrites its catalogue (FILE_DATABASE)
 │   ├── preflight.py         # Lists the requests the vault does not already hold (PREFLIGHT)
-│   ├── prepare_resource.py  # Checks a resource against its genome and indexes it (PREPARE_RESOURCE)
+│   ├── prepare_resource.py  # Renames a resource if it must be, checks it against its genome and indexes it (PREPARE_RESOURCE)
 │   ├── register_asset.py    # Registers a transcriptome or a resource (REGISTER_ASSET)
-│   ├── resource_registry.py # Reads the resource descriptions in resources/
+│   ├── resource_registry.py # Reads the descriptions in resources/ and databases/
 │   ├── resolve.py           # Interactive resolver: generic queries to exact assemblies
 │   ├── update_refgenie.py   # Registers downloads in the refgenie vault (REGISTER)
 │   └── vault_crate.py       # Describes the vault as an RO-Crate (ro-crate-metadata.json)
@@ -104,6 +107,7 @@ nextflow run main.nf -stub -profile standard --input requests/requests_resolved.
 │   └── sge.config           # Scheduler profile for the UCL clusters
 ├── data/
 │   └── references/          # Default output directory for genomes
+├── databases/               # Databases that belong to no genome and can be requested, one file each
 ├── main.nf                  # The Nextflow pipeline
 ├── nextflow.config          # Nextflow configuration profiles
 ├── README.md
@@ -113,6 +117,8 @@ nextflow run main.nf -stub -profile standard --input requests/requests_resolved.
 ├── requests/
 │   ├── requests_raw.csv.example   # Tracked template, copied on first run
 │   ├── requests_raw.csv           # The file you edit (not tracked)
+│   ├── databases.csv.example      # Tracked template for the list of databases
+│   ├── databases.csv              # Your list of databases, if you want any (not tracked)
 │   └── requests_resolved.csv      # Resolver output and cache (not tracked)
 └── run_pipeline.sh          # Unified wrapper script to run everything
 ```
@@ -181,6 +187,8 @@ refgenie seek human/clinvar.provenance   # where it came from, and what the chec
 | `clinvar` | `GRCh38`, `GRCh37` | NCBI's VCF, verified against its published md5, with a tabix index. Named `1`, `2`, `X`. About 200 MB, replaced weekly. |
 | `blacklist` | `hg38`, `hg19`, `mm10`, `dm6`, `dm3`, `ce11`, `ce10` | The ENCODE blacklist v2, stored as published. Named `chr1`, `chr2`, `chrX`. A few kB. |
 
+The GATK known-sites files, dbSNP and the VEP cache are requested the same way and have a section of their own, [below](#variant-calling-the-gatk-known-sites-files-dbsnp-a-vep-cache).
+
 **You name the build because the pipeline cannot work it out.** Two builds of one species can share every contig name, and only you know which you hold.
 
 **Nothing is registered until it has been checked against the genome.** A resource is a list of positions on named sequences, and whether those mean anything depends on the genome beside them. Tools do not complain when they do not match: a known-sites file that says `chr1` beside a genome that says `1` simply matches nothing, and the analysis runs to the end. So each file is compared with the genome's own sequence names and lengths first, and refused if:
@@ -206,10 +214,105 @@ Other things to know:
 
 - **The version is the tag.** ClinVar is tagged with the date NCBI last changed the file, so weekly releases sit side by side and the newest is the default. The blacklist is `v2`.
 - **It is only fetched when it has changed.** Each run asks the publisher for the current version first and skips the download if the vault has it. With `--check_releases false`, whatever is held is kept.
+- **The publisher is asked on every run, including a resumed one.** `run_pipeline.sh` always resumes, and Nextflow replays a step whose inputs have not changed without running it. A download is replayed that way; the answer "still current" never is.
 - **A few records may sit on sequences your genome lacks.** ClinVar has about fifty on unplaced scaffolds that a primary assembly leaves out. That passes, and they are listed in the asset's provenance.
 - **Resources follow the genome, not the row.** Two rows for one genome that both ask for ClinVar fetch it once.
 
-**Adding a resource** is two small files, with no code: a description in `resources/<name>.json` (its address for each build, how it is versioned, whether to index it) and a recipe in `recipes/<name>.json`. `resources/clinvar.json` and `resources/blacklist.json` are the patterns to copy. Files of kinds other than VCF and BED are not handled yet, nor are files that have to be renamed or reshaped before they fit.
+**Adding a resource** is two small files, with no code: a description in `resources/<name>.json` (its address for each build, how it is versioned, whether to index it) and a recipe in `recipes/<name>.json`. `resources/clinvar.json` and `resources/blacklist.json` are the patterns to copy, and `bin/resource_registry.py` lists every field. A file that names its sequences differently from any genome can be given a `rename` entry (see dbSNP below). Kinds other than VCF, BED and a VEP cache are not handled.
+
+#### Variant calling: the GATK known-sites files, dbSNP, a VEP cache
+
+These go in the same `resources` column. What differs is which genome each one fits.
+
+| Resource | Builds | What you get |
+|---|---|---|
+| `gatk_dbsnp138`, `gatk_known_indels`, `gatk_mills` | `hg38` | The three known-sites files GATK's base recalibration is documented with, from the Broad's resource bundle. 1.6 GB, 60 MB and 20 MB. |
+| `gatk_1000g_snps`, `gatk_hapmap`, `gatk_omni` | `hg38` | The training and truth sets for variant quality score recalibration, from the same bundle. 1.9 GB, 60 MB and 50 MB. |
+| `dbsnp` | `GRCh38`, `GRCh37` | dbSNP build 157 from NCBI, with its sequence names rewritten to your genome's. About 30 GB. |
+| `vep_cache` | `GRCh38`, `GRCh37`, `GRCm39`, `R64-1-1` | The Ensembl VEP cache for the release your annotation is at, unpacked. Human is about 28 GB packed. |
+
+**The GATK files fit the genome they were made for.** They name sequences `chr1`, `chr2`, `chrX`, and are refused on an Ensembl genome. Request the Broad's genome by address and ask for them on that row:
+
+```csv
+species,query,provider,annotation,aliases,release,url,annotation_url,resources
+Homo_sapiens,hg38_broad,url,false,hs38,,https://storage.googleapis.com/gcp-public-data--broad-references/hg38/v0/Homo_sapiens_assembly38.fasta,,gatk_dbsnp138:hg38;gatk_known_indels:hg38;gatk_mills:hg38
+```
+
+```bash
+refgenie seek hs38/fasta        # the reference, with its .fai and .dict beside it
+refgenie seek hs38/gatk_mills   # a known-sites VCF, with its .tbi beside it
+```
+
+Each is tagged `v0`, the Broad's own name for this edition of the bundle, and verified against the md5 that Google Cloud Storage sends with the download.
+
+**dbSNP fits any GRCh38 genome, because it is renamed on arrival.** NCBI publishes it with RefSeq accessions (`NC_000001.11`), which no genome in a vault uses. So the pipeline also fetches NCBI's assembly report for the build, which lists every sequence under each of its names with its length, and rewrites each name to the one your genome uses: `1` for an Ensembl genome, `chr1` for the Broad's.
+
+- **A sequence is renamed only where your genome's sequence of that name has the length the report gives.** The right name on another build is not a match.
+- **Nothing else in a record is changed**, and the renamed file then has to pass the same check as any other resource.
+- **About 6% of its records keep their RefSeq names.** They are on patches and alternate loci that a primary assembly does not have. They are counted, by sequence, in the asset's provenance file.
+- **It is pinned to build 157** in dbSNP's archive and tagged `b157`. A newer build is a change to `resources/dbsnp.json`.
+- **It needs room and time.** The download is about 30 GB; the renamed copy is as much again in Nextflow's `work/`, and the vault's copy a third. Renaming and indexing run on the machine you launched from and should be expected to take hours; this has not been timed on the full file.
+
+**A VEP cache follows your annotation.** Ask for `vep_cache:GRCh38` on a row with an Ensembl annotation, and the cache fetched is the one for the release that annotation is at. It is tagged with that release, like the transcriptome.
+
+```bash
+vep --offline --cache --dir_cache "$(refgenie seek human/vep_cache)" --cache_version 116 \
+    --species homo_sapiens --assembly GRCh38 ...
+```
+
+- **It is unpacked in the vault**, so the path `refgenie seek` prints is the directory VEP takes as `--dir_cache`.
+- **A genome held at two releases gets a cache for each.** A row pinned to 110 and a row at 116 are two caches, tagged `110` and `116`.
+- **It is only for a row with an Ensembl annotation.** On any other row it is refused before anything is fetched, saying so: there is no release to follow.
+- **It is checked against the genome in the form a cache allows.** A cache is a directory per sequence, holding a file per million bases. At least 95% of your genome's bases must be on sequences the cache has a directory for, and no file may start beyond the end of its sequence.
+- **Ensembl posts no md5 for it.** The archive is compared with the size Ensembl announces and read to its end before it is registered, which catches a transfer that was cut short.
+- **Use it with the VEP of the same number.** A cache is tied to its release.
+
+**The size is checked before a large download starts.** Each fetch compares the size the publisher announces with the space free in Nextflow's `work/` and stops, without retrying, if the file cannot fit. That is a floor, not a budget: a resource is held once as fetched and once in the vault, and a renamed one a third time in between, until `work/` is cleaned.
+
+#### Databases that belong to no genome
+
+Swiss-Prot, Pfam, SILVA and a Kraken 2 index are reference data too, but they are not written in any assembly's coordinates. So they have no row in the request file, which is a list of genomes, and no place in refgenie, where every asset hangs off a genome. List them in a file of their own:
+
+```bash
+cp requests/databases.csv.example requests/databases.csv
+```
+
+```csv
+database
+swissprot
+pfam
+```
+
+`run_pipeline.sh` reads `requests/databases.csv` on every run if it exists. `--databases <file>` names another list.
+
+| Database | What you get |
+|---|---|
+| `swissprot` | UniProtKB/Swiss-Prot as one FASTA file, tagged with the UniProt release (`2026_04`). About 90 MB. |
+| `pfam` | `Pfam-A.hmm.gz`, tagged with the Pfam release (`39.0`) and verified against EBI's md5. About 660 MB. |
+| `silva` | SILVA 138.2 SSU Ref NR99 with taxonomy, verified against its md5. About 200 MB. |
+| `kraken2_viral`, `kraken2_standard` | A prebuilt Kraken 2 index of 2024-12-28, unpacked. 570 MB and 69 GB packed. |
+
+They are filed beside the vault, by name and version:
+
+```text
+<outdir>/databases/
+├── databases.tsv                  <-- one line per database and version
+├── swissprot/2026_04/
+│   ├── uniprot_sprot.fasta.gz
+│   └── provenance.json
+└── kraken2_viral/20241228/        <-- the directory to give kraken2 as --db
+    ├── hash.k2d, opts.k2d, taxo.k2d, ...
+    └── provenance.json
+```
+
+- **The version is worked out before anything is fetched**, from the publisher's own release file where there is one, and a version already in the tree is not fetched again.
+- **A new release is a new directory beside the old one.** Nothing is replaced or removed, so an analysis can keep naming the version it used. There is no "current" link; `databases.tsv` lists what is held.
+- **There is no genome to check it against.** It is verified against the publisher's checksum where one is posted (Pfam, SILVA). UniProt and the Kraken 2 indexes post none the pipeline can use, so those are compared with the announced size only, and the record says so.
+- **A version appears in one step.** It is assembled out of sight and renamed into place, so a reader never finds half a database.
+- **`databases.tsv` is rewritten from the tree on every run**, like the vault's index, and each version is listed in the vault's RO-Crate.
+- **It needs the registration steps**, so it cannot be combined with `--register false`.
+
+**Adding a database** is one file, `databases/<name>.json`: its address, how it is versioned, where its checksum is, and `"unpack": "tar"` if it is published as an archive. The five that ship are the patterns to copy.
 
 > **Three things are checked before anything is downloaded**, and each fails the row with the line number and the reason:
 >
@@ -233,6 +336,7 @@ This script will automatically:
 3. **refgenie catalogue**: Finally, in the same Nextflow run, it automatically initializes a `refgenie_export.yaml` for you (if one doesn't exist yet), computes the sequence digests, and links your aliases. The downloaded source directories are **kept** unless you pass `--cleanup` (see below).
 4. **Transcriptome**: Derive a transcriptome for every genome that has an annotation and does not have one yet (see [Transcriptome](#transcriptome); `--no-txome` skips this).
 5. **Small derived assets**: Derive a transcript-to-gene table, an indexed GTF, BED12 and refFlat from each annotation, and a `.2bit` from each genome, wherever the vault lacks them (see [Small derived assets](#small-derived-assets); `--no-derived` skips this).
+6. **Resources and databases**: Fetch the third-party resources your rows ask for and register each against its genome once it has been checked, and file any databases listed in `requests/databases.csv` beside the vault (see [Databases that belong to no genome](#databases-that-belong-to-no-genome)).
 
 > **Cataloguing is part of the Nextflow run.** It used to be a separate step the wrapper ran after Nextflow returned. It is now the `REGISTER` process, with three properties worth knowing:
 >
@@ -404,7 +508,10 @@ The records above are written for this pipeline. `<outdir>/ro-crate-metadata.jso
 | Each genome | a `Dataset`, `data/<digest>/`, with its digest as identifier and its aliases as alternate names |
 | Each asset at each tag | a `Dataset`, `data/<digest>/<asset>/<tag>/`, linked to the assets it was built from |
 | Each file | a `File`, with its size, its format, and a checksum where one was recorded |
+| Each database at each version | a `Dataset`, `databases/<name>/<version>/`, with its file if it is kept as one |
 | Each download, each transcriptome derivation, each resource fetch | a `CreateAction`: the tool and its version, what it read, what it produced, when it finished |
+
+An asset that is a whole tree, such as an unpacked VEP cache or Kraken 2 index, is described as its directory and not file by file.
 
 It does not replace the `provenance.json` files. They stay as they are, each is listed in the crate as a file describing its asset, and they remain the only place for what has no standard term: the summary of an annotation, what the check of a resource against its genome found.
 
@@ -470,6 +577,7 @@ If the release cannot be identified - an unreachable provider, say - the asset i
 <outdir>/
 ├── refgenie_export.yaml            <-- The master database index
 ├── ro-crate-metadata.json          <-- The vault described as an RO-Crate
+├── databases/                      <-- Databases that belong to no genome, if you asked for any
 │
 ├── data/                           <-- The vault. Files are named by digest, not by assembly.
 │   └── 89c2a7e1.../                <-- sequence-collection digest (truncated here for width)
@@ -611,12 +719,12 @@ Only the derivations are submitted as jobs. Everything else stays on the machine
 
 | Step | Runs | Why |
 |---|---|---|
-| Download (`FETCH_GENOME`) | where you launched | needs outbound network, which compute nodes often lack |
-| Preflight and registration | where you launched | they read and edit the vault's single config |
+| Downloads (`FETCH_GENOME`, `FETCH_RESOURCE`, `FETCH_DATABASE`) | where you launched | need outbound network, which compute nodes often lack |
+| Preflight, registration, the check of a resource, the filing of a database | where you launched | they read and edit the vault's single config, or write beside it |
 | Transcriptome (`DERIVE_TXOME`) | compute node | needs neither; 1 core, 4 GB, 2 h |
 | Small derived assets (`DERIVE_ANNOTATION`, `DERIVE_TWOBIT`) | compute node | need neither; 1 core, 6 GB and 8 GB, 2 h |
 
-So the downloading and compressing, which is the slow part, still happens on the launching machine. If your site does not allow that on a login node, launch the pipeline from an interactive session or a transfer node that has network access.
+So the downloading and compressing, which is the slow part, still happens on the launching machine. So does the renaming of dbSNP and the unpacking of a VEP cache or a Kraken 2 index, each of which reads tens of gigabytes. If your site does not allow that on a login node, launch the pipeline from an interactive session or a transfer node that has network access.
 
 The scheduler request format (memory per core, node-local scratch) is the same as rnaseq-flow's `conf/sge.config`. For another site, copy `conf/sge.config` and adjust it. The profile has been checked to load and resolve; it has **not** yet submitted a job to a real scheduler.
 
@@ -695,6 +803,10 @@ Two operational notes:
 ## Version History
 
 - **Unreleased**: Correctness fixes from the 2026-11-10 review. Behaviour changes - read before upgrading.
+  - **Variant-calling resources.** The six GATK known-sites files for hg38, dbSNP build 157 and the Ensembl VEP cache can be requested in the `resources` column. dbSNP is renamed from RefSeq accessions to the genome's own sequence names through NCBI's assembly report before it is checked; a VEP cache follows the release of the genome's annotation and is unpacked in the vault. See *Variant calling*.
+  - **Databases that belong to no genome** (Swiss-Prot, Pfam, SILVA, Kraken 2 indexes) are listed in `requests/databases.csv` and filed under `<outdir>/databases/<name>/<version>/`, with a `databases.tsv` catalogue and an entry each in the RO-Crate. See *Databases that belong to no genome*.
+  - **A resumed run asks each publisher again.** A fetch step that had answered "the vault's copy is current" was replayed from Nextflow's cache on every later run for as long as `work/` survived, so a new ClinVar release was not seen until the cache was cleared. Once a genome holds some version of a resource, its fetch step now runs on every run.
+  - **A fetch checks the space free before it downloads**, compares what arrived with the size announced, and can verify against a checksum sent with the download as well as one posted in a file. A resource stored exactly as fetched is linked into place in `work/` instead of copied.
   - **Vault genomes are named `<assembly>_<provider>`.** Previously the assembly name alone, which Ensembl and GENCODE share for `GRCh38.p14` and `GRCm39`: the second provider's annotation was filed under the first provider's genome. Bare assembly names remain as aliases, first come first served. A vault built earlier picks up the new name when its download directory is re-ingested; if that directory was already removed with `--cleanup`, the row is reported with "no genome named ...".
   - **Two releases of one assembly can be requested together.** A pinned request downloads into `<provider>/<species>/release-<n>/<assembly>/`, and the resolver cache is keyed on the release as well.
   - **The default annotation tag only moves forward.** Ingesting an older release no longer takes the default from a newer one.

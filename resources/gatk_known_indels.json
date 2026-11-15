@@ -1,0 +1,20 @@
+{
+  "name": "gatk_known_indels",
+  "description": "The known indels file of the GATK resource bundle for hg38 (Homo_sapiens_assembly38.known_indels.vcf.gz), published by the Broad Institute. Known indels for base quality score recalibration.",
+  "kind": "vcf",
+  "index": "tabix",
+  "terms": "https://gatk.broadinstitute.org/hc/en-us/articles/360035890811-Resource-bundle",
+  "min_matched": 0.95,
+  "variants": {
+    "hg38": {
+      "url": "https://storage.googleapis.com/gcp-public-data--broad-references/hg38/v0/Homo_sapiens_assembly38.known_indels.vcf.gz",
+      "version": "v0",
+      "checksum": {
+        "type": "md5",
+        "header": "x-goog-hash"
+      },
+      "size": "about 60 MB",
+      "naming": "UCSC: chr1, chr2, chrX, as in the Broad's Homo_sapiens_assembly38.fasta. Fits that genome and a UCSC-named GRCh38 analysis set; not an Ensembl or NCBI-named one."
+    }
+  }
+}

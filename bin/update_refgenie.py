@@ -464,6 +464,32 @@ def asset_file(config, config_file, digest, asset, tag, seek_key):
     return ""
 
 
+def asset_directory(config, config_file, digest, asset, tag, seek_key):
+    """
+    The absolute path of an asset that is a directory, or ''.
+
+    Most assets are a file or two, and asset_file() answers for them. A few are a
+    tree that a tool is pointed at whole - an unpacked VEP cache - and their
+    recipe gives the seek key as '.', the asset's own directory. That directory
+    exists as soon as a build is attempted, so it only counts when it holds a
+    directory of its own: what was unpacked, not just refgenie's build log and
+    the record beside it.
+    """
+    genome = (config.get("genomes") or {}).get(digest) or {}
+    tags = ((genome.get("assets") or {}).get(asset) or {}).get("tags") or {}
+    tag_data = next((data for name, data in tags.items() if str(name) == str(tag)), None) or {}
+    filename = (tag_data.get("seek_keys") or {}).get(seek_key)
+    if not filename:
+        return ""
+    for root in vault_roots(config, config_file):
+        candidate = os.path.normpath(os.path.join(root, "data", digest, asset, str(tag), filename))
+        if os.path.isdir(candidate) and any(
+                entry != "_refgenie_build" and os.path.isdir(os.path.join(candidate, entry))
+                for entry in os.listdir(candidate)):
+            return candidate
+    return ""
+
+
 MANIFEST_FIELDS = [
     "species", "assembly", "provider", "release", "vault_name", "digest",
     # What a derive process needs to build something FROM this genome:
