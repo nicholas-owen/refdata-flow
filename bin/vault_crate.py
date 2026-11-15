@@ -27,6 +27,11 @@ WHAT IS IN THE CRATE
     each download, each       a CreateAction: what ran (and which version), what
     derivation, each fetch    it read, what it produced, and when it finished
 
+A derivation is recognised by its record, not by a list of asset names kept here:
+any asset whose provenance file names itself and a tool. What it was derived from
+is refgenie's own record of the asset's parents. So a new derived asset appears
+in the crate with no change to this file.
+
 WHICH STANDARD, AND WHY THESE VERSIONS
 
 RO-Crate 1.1, with the Process Run Crate profile 0.5 for the actions. Both have
@@ -46,8 +51,8 @@ never edited. Three rules follow from that:
     field would be the wrong trade; an absent `sha256` means "not recorded", and
     the size is always there.
   * Nothing in it depends on when it was written. `datePublished` is the latest
-    retrieval among the vault's records, so two runs over an unchanged vault
-    produce the same bytes.
+    retrieval or derivation among the vault's records, so two runs over an
+    unchanged vault produce the same bytes.
 """
 import json
 import os
@@ -72,24 +77,37 @@ PROCESS_RUN_PROFILE = f"https://w3id.org/ro/wfrun/process/{PROCESS_RUN_VERSION}"
 COMPLETED = {"@id": "http://schema.org/CompletedActionStatus"}
 
 PIPELINE_URL = "https://github.com/nicholas-owen/refdata-flow"
+KENT_URL = "https://github.com/ucscGenomeBrowser/kent"
 SOFTWARE_URLS = {
     "genomepy": "https://github.com/vanheeringen-lab/genomepy",
     "gffread": "https://github.com/gpertea/gffread",
+    "htslib": "https://github.com/samtools/htslib",
+    "gtfToGenePred": KENT_URL,
+    "genePredToBed": KENT_URL,
+    "faToTwoBit": KENT_URL,
     "refdata-flow": PIPELINE_URL,
 }
 
-# EDAM format identifiers, checked against EDAM.tsv on 2026-11-13.
+# What a derivation did, where one sentence says more than the generic one.
+DERIVATIONS = {
+    "fasta_txome": "{tool} cut every transcript in the annotation out of the genome; "
+                   "sequence was then written in upper case.",
+}
+
+# EDAM format identifiers, checked against EDAM.tsv on 2026-11-13 and -14.
 EDAM = {
     "FASTA": "http://edamontology.org/format_1929",
     "GTF": "http://edamontology.org/format_2306",
     "VCF": "http://edamontology.org/format_3016",
     "BED": "http://edamontology.org/format_3003",
     "tabix": "http://edamontology.org/format_3616",
+    "2bit": "http://edamontology.org/format_3009",
+    "TSV": "http://edamontology.org/format_3475",
 }
 
 # (suffix, media types, EDAM name or None). First match wins, so longer first.
 FORMATS = [
-    (".vcf.gz.tbi", [], "tabix"),
+    (".gz.tbi", [], "tabix"),
     (".fa.fai", ["text/tab-separated-values"], None),
     (".chrom.sizes", ["text/tab-separated-values"], None),
     (".vcf.gz", ["application/gzip"], "VCF"),
@@ -97,6 +115,9 @@ FORMATS = [
     (".bed.gz", ["application/gzip"], "BED"),
     (".bed", ["text/plain"], "BED"),
     (".fa", ["text/plain"], "FASTA"),
+    (".2bit", [], "2bit"),
+    (".tsv", ["text/tab-separated-values"], "TSV"),
+    (".refFlat.txt", ["text/tab-separated-values"], None),
     (".json", ["application/json"], None),
     (".dict", ["text/plain"], None),
     (".txt", ["text/plain"], None),
@@ -255,13 +276,14 @@ def build_crate(outdir, config_file):
                              if str(k) == tag), None) or {}
 
             # refgenie's own record of what an asset was built from.
-            parents = []
+            parents, parent_keys = [], []
             for parent in tag_data.get("asset_parents") or []:
                 parent_digest, _, rest = str(parent).partition("/")
                 parent_asset, _, parent_tag = rest.partition(":")
                 parent_dir = tag_directory(parent_digest, parent_asset, parent_tag)
                 if crate.has(parent_dir):
                     parents.append(ref(parent_dir))
+                    parent_keys.append((parent_digest, parent_asset, parent_tag))
             if parents:
                 dataset["isBasedOn"] = parents
 
@@ -345,27 +367,34 @@ def build_crate(outdir, config_file):
                                         "The resource as published."),
                            file_ref(digest, "fasta", "default", "chrom_sizes")]
                 results = [data_file, file_ref(digest, asset, tag, "tbi"), ref(held["provenance"])]
-            elif asset == "fasta_txome":
-                # A transcriptome derived from the genome and one annotation release.
-                annotation_asset, _, release = str(record.get("annotation", "")).partition(":")
-                tool = str(record.get("tool") or "gffread")
+            elif record.get("asset") == asset and record.get("tool"):
+                # Something derived from what the vault already held: a
+                # transcriptome, a tx2gene table, a .2bit. What it was derived
+                # from is refgenie's own record of the asset's parents, and the
+                # file read from each parent is the one named after it.
+                if record.get("derived_utc"):
+                    dates.append(record["derived_utc"])
+                tool = str(record["tool"])
+                sources = ", ".join(f"{a}:{t}" for _, a, t in parent_keys) or "the vault"
                 action = {
                     "@id": f"#derive-{asset}-{short}-{tag}",
                     "@type": "CreateAction",
-                    "name": f"Derive transcriptome from {annotation_asset}:{release}",
-                    "description": f"{tool} cut every transcript in the annotation out of "
-                                   "the genome; sequence was then written in upper case.",
+                    "name": f"Derive {asset} from {sources}",
+                    "description": DERIVATIONS.get(asset, "").format(tool=tool) or
+                                   f"Derived from {sources} with {tool}. The record beside "
+                                   "the files gives the command.",
                     "instrument": crate.software(tool, record.get("tool_version")),
                     "actionStatus": COMPLETED,
                 }
-                objects = [file_ref(digest, "fasta", "default", "fasta"),
-                           file_ref(digest, annotation_asset, release, annotation_asset)]
-                results = [file_ref(digest, asset, tag, asset), ref(held["provenance"])]
+                objects = [file_ref(d, a, t, a) for d, a, t in parent_keys]
+                results = [file_ref(digest, asset, tag, asset), file_ref(digest, asset, tag, "tbi"),
+                           ref(held["provenance"])]
             else:
                 continue
 
-            if record.get("retrieved_utc"):
-                action["endTime"] = record["retrieved_utc"]
+            finished = record.get("retrieved_utc") or record.get("derived_utc")
+            if finished:
+                action["endTime"] = finished
             objects = [item for item in objects if item]
             if objects:
                 action["object"] = objects
@@ -387,8 +416,8 @@ def build_crate(outdir, config_file):
         "name": "Process Run Crate",
         "version": PROCESS_RUN_VERSION,
     })
-    # The last time anything in the vault was retrieved; the config's own date for a
-    # vault whose records predate retrieval times.
+    # The last time anything in the vault was retrieved or derived; the config's own
+    # date for a vault whose records predate those times.
     if dates:
         published = max(dates)
     else:

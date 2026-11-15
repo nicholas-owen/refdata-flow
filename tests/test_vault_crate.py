@@ -368,6 +368,76 @@ class Actions(HandBuiltVault):
         self.assertEqual(self.ids(entities[f"data/{MOUSE}/fasta_txome/116/"]["isBasedOn"]),
                          [f"data/{MOUSE}/fasta/default/", f"data/{MOUSE}/ensembl_gtf/116/"])
 
+    def derived(self, name, tag, files, parents, **fields):
+        """An asset derived from others, with the record a derive script leaves."""
+        record = {"asset": name, "genome": "toyAsm_ensembl", "tool": "sometool",
+                  "tool_version": "1.0", "derived_utc": "2026-11-14T09:00:00+00:00"}
+        record.update(fields)
+        files = dict(files, provenance=(f"{MOUSE}.provenance.json", record))
+        self.add(MOUSE, name, tag, files, parents=[f"{MOUSE}/{p}" for p in parents])
+
+    def test_any_asset_whose_record_names_itself_and_a_tool_is_a_derivation(self):
+        # Nothing in the builder knows the name "tx2gene".
+        self.genome_with_download()
+        self.derived("tx2gene", "116", {"tx2gene": (f"{MOUSE}.tx2gene.tsv", b"t1\tg1\tG1\n")},
+                     ["ensembl_gtf:116"], tool="refdata-flow", tool_version="1.2.3")
+        entities = self.entities()
+        action, = self.actions("#derive-tx2gene-")
+        self.assertEqual(action["name"], "Derive tx2gene from ensembl_gtf:116")
+        self.assertEqual(action["endTime"], "2026-11-14T09:00:00+00:00")
+        tool = entities[action["instrument"]["@id"]]
+        self.assertEqual((tool["name"], tool["version"]), ("refdata-flow", "1.2.3"))
+        # Read from its one parent, the annotation, and not from the genome.
+        self.assertEqual(self.ids(action["object"]),
+                         [f"data/{MOUSE}/ensembl_gtf/116/{MOUSE}.gtf.gz"])
+        self.assertEqual(self.ids(action["result"]),
+                         [f"data/{MOUSE}/tx2gene/116/{MOUSE}.tx2gene.tsv",
+                          f"data/{MOUSE}/tx2gene/116/{MOUSE}.provenance.json"])
+        table = entities[f"data/{MOUSE}/tx2gene/116/{MOUSE}.tx2gene.tsv"]
+        self.assertEqual(table["encodingFormat"], ["text/tab-separated-values",
+                                                   {"@id": "http://edamontology.org/format_3475"}])
+
+    def test_derivation_from_the_genome_alone_reads_the_fasta(self):
+        self.genome_with_download()
+        self.derived("twobit", "default", {"twobit": (f"{MOUSE}.2bit", b"\x43\x27\x41\x1a")},
+                     ["fasta:default"], tool="faToTwoBit", tool_version="502")
+        entities = self.entities()
+        action, = self.actions("#derive-twobit-")
+        self.assertEqual(self.ids(action["object"]), [f"data/{MOUSE}/fasta/default/{MOUSE}.fa"])
+        self.assertEqual(entities[f"data/{MOUSE}/twobit/default/{MOUSE}.2bit"]["encodingFormat"],
+                         {"@id": "http://edamontology.org/format_3009"})
+        self.assertTrue(entities[action["instrument"]["@id"]]["url"].startswith("https://"))
+
+    def test_an_index_made_with_the_file_is_a_result_too(self):
+        self.genome_with_download()
+        self.derived("gtf_indexed", "116",
+                     {"gtf_indexed": (f"{MOUSE}.sorted.gtf.gz", GTF),
+                      "tbi": (f"{MOUSE}.sorted.gtf.gz.tbi", b"tbi")},
+                     ["ensembl_gtf:116"], tool="htslib", tool_version="1.25")
+        action, = self.actions("#derive-gtf_indexed-")
+        self.assertEqual(self.ids(action["result"]),
+                         [f"data/{MOUSE}/gtf_indexed/116/{MOUSE}.sorted.gtf.gz",
+                          f"data/{MOUSE}/gtf_indexed/116/{MOUSE}.sorted.gtf.gz.tbi",
+                          f"data/{MOUSE}/gtf_indexed/116/{MOUSE}.provenance.json"])
+        index = self.entities()[f"data/{MOUSE}/gtf_indexed/116/{MOUSE}.sorted.gtf.gz.tbi"]
+        self.assertEqual(index["encodingFormat"], {"@id": "http://edamontology.org/format_3616"})
+
+    def test_latest_derivation_counts_towards_date_published(self):
+        self.genome_with_download()                       # retrieved 2026-11-09
+        self.derived("tx2gene", "116", {"tx2gene": (f"{MOUSE}.tx2gene.tsv", b"")},
+                     ["ensembl_gtf:116"])                 # derived 2026-11-14
+        self.assertEqual(self.crate()["@graph"][1]["datePublished"],
+                         "2026-11-14T09:00:00+00:00")
+
+    def test_record_that_names_no_tool_or_another_asset_is_not_a_derivation(self):
+        self.genome_with_download()
+        self.derived("tx2gene", "116", {"tx2gene": (f"{MOUSE}.tx2gene.tsv", b"x")},
+                     ["ensembl_gtf:116"], tool="")
+        self.derived("bed12", "116", {"bed12": (f"{MOUSE}.bed", b"x")},
+                     ["ensembl_gtf:116"], asset="something_else")
+        self.assertEqual(self.actions("#derive-"), [])
+        self.assertIn(f"data/{MOUSE}/bed12/116/{MOUSE}.bed", self.entities())
+
     def test_resource_fetch_links_its_source_and_the_publishers_terms(self):
         self.genome_with_download()
         self.resource()

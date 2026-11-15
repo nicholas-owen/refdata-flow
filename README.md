@@ -69,10 +69,15 @@ The tests need no network and no extra packages. Run them with the pipeline's ow
 - `tests/test_download.py` covers the download record, with the download itself replaced.
 - `tests/test_resources.py` covers third-party resources: the registry, the fetch step with the network replaced, and the check of a resource against a genome.
 - `tests/test_vault_crate.py` covers the vault's RO-Crate, built from a hand-written vault.
+- `tests/test_derive.py` runs the two derive scripts with the real tools on a hand-written annotation and genome. Skipped where the tools are missing; see below.
 - `tests/test_ingest_e2e.py` builds a real refgenie vault from 40-base toy genomes: one assembly from two providers, plus an older pinned release. It is skipped, with the reason printed, where refgenie or `samtools` is missing or the filesystem has no symlinks.
 - `tests/test_nextflow_stub.py` executes `main.nf`. Most of it uses `nextflow run -stub`, which replaces the download with a toy assembly directory and leaves everything around it real: request validation, the duplicate guard, the publish layout. The `Registration` tests run the whole thing, download and catalogue, in one Nextflow run, with and without `--cleanup`. The retry tests run the real script with a `python3` that only fails. It is skipped where `nextflow` is not on `PATH`, and takes about four minutes.
 
-Two tests, `RealDerivation`, run the transcriptome derivation with the real `gffread` and are skipped where it is not on `PATH`. The pipeline's Python environment does not include it. To run them, put one on `PATH` first, for example from a conda environment made with `conda create -n gffread -c bioconda gffread=0.12.7`.
+Some tests run the real derivation tools and are skipped where those are not on `PATH`; the pipeline's Python environment does not include them. `RealDerivation` (two tests) needs `gffread`. `tests/test_derive.py` needs `gtfToGenePred`, `genePredToBed`, `bgzip` and `tabix` for the annotation assets, and `faToTwoBit` and `twoBitInfo` for the `.2bit`. To run them all, put the tools on `PATH` first, for example from a conda environment:
+
+```bash
+conda create -n refdata-tools -c bioconda gffread=0.12.7 htslib ucsc-gtftogenepred ucsc-genepredtobed ucsc-fatotwobit ucsc-twobitinfo
+```
 
 You can run the stub by hand too. Nothing is downloaded, and the `provenance.json` it writes is marked `"stub": true`:
 
@@ -84,6 +89,8 @@ nextflow run main.nf -stub -profile standard --input requests/requests_resolved.
 
 ```
 ├── bin/
+│   ├── derive_annotation.sh # Makes tx2gene, the indexed GTF, BED12 and refFlat (DERIVE_ANNOTATION)
+│   ├── derive_twobit.sh     # Writes a genome as .2bit and checks it (DERIVE_TWOBIT)
 │   ├── download.py          # Fetches one genome and its annotation (FETCH_GENOME)
 │   ├── fetch_resource.py    # Fetches one third-party resource (FETCH_RESOURCE)
 │   ├── preflight.py         # Lists the requests the vault does not already hold (PREFLIGHT)
@@ -225,6 +232,7 @@ This script will automatically:
 2. **Download**: Automatically launch the Nextflow pipeline on the resolved targets using Conda. It first asks the vault which requests it already holds, and downloads only the rest (see [Genomes already in the vault](#-genomes-already-in-the-vault-are-not-downloaded-again)).
 3. **refgenie catalogue**: Finally, in the same Nextflow run, it automatically initializes a `refgenie_export.yaml` for you (if one doesn't exist yet), computes the sequence digests, and links your aliases. The downloaded source directories are **kept** unless you pass `--cleanup` (see below).
 4. **Transcriptome**: Derive a transcriptome for every genome that has an annotation and does not have one yet (see [Transcriptome](#transcriptome); `--no-txome` skips this).
+5. **Small derived assets**: Derive a transcript-to-gene table, an indexed GTF, BED12 and refFlat from each annotation, and a `.2bit` from each genome, wherever the vault lacks them (see [Small derived assets](#small-derived-assets); `--no-derived` skips this).
 
 > **Cataloguing is part of the Nextflow run.** It used to be a separate step the wrapper ran after Nextflow returned. It is now the `REGISTER` process, with three properties worth knowing:
 >
@@ -556,6 +564,38 @@ It runs after registration, so it also covers genomes already in the vault: a va
 
 No aligner or quantifier indexes are built. An index depends on a tool version and on choices such as k-mer size, which belong to an analysis, not to a reference.
 
+### Small derived assets
+
+Every run also makes the small files that pipelines ask for alongside a genome and its GTF, and that otherwise get regenerated, slightly differently, in each project. Like the transcriptome they are derived from what the vault already holds, need no download, and are part of a run unless you pass `--no-derived`.
+
+| Asset | File | What it is | Read by |
+|---|---|---|---|
+| `tx2gene` | `<alias>.tx2gene.tsv` | transcript_id, gene_id, gene_name; tab-separated, no header | tximport, Salmon's gene-level summary |
+| `gtf_indexed` | `<alias>.sorted.gtf.gz` + `.tbi` | the same GTF, sorted by position, bgzipped, tabix-indexed | VEP `--gtf`, IGV, pysam |
+| `bed12` | `<alias>.bed` | one BED12 line per transcript | RSeQC, UCSC tools |
+| `refflat` | `<alias>.refFlat.txt` | the same gene models in refFlat format | Picard `CollectRnaSeqMetrics` |
+| `twobit` | `<alias>.2bit` | the genome in UCSC's `.2bit` format | deepTools, BLAT, rtracklayer |
+
+```bash
+refgenie seek human/tx2gene              # for the newest annotation release held
+refgenie seek human/tx2gene:115          # for a particular release
+refgenie seek human/gtf_indexed.tbi      # the index beside the sorted GTF
+refgenie seek human/twobit
+```
+
+The four made from an annotation are tagged with its release and record it as their parent, exactly as the transcriptome does. `twobit` is made once per genome, including one requested with `annotation=false`, and records the `fasta` asset as its parent. Each has an `<alias>.provenance.json` with the tool, its version, the command, and when it was made.
+
+What to know before using them:
+
+- **The transcript names are the transcriptome's.** `tx2gene` takes each `transcript_id` as the GTF writes it, which is also what `fasta_txome` names its records by. On Ensembl human 116, all 646,577 names match.
+- **`tx2gene` never has an empty gene name.** Where a gene has none, the third column repeats the gene_id. That is 35,483 of the 78,941 genes in Ensembl human 116.
+- **`refflat` leads with the gene_id, not the gene name.** Picard groups transcripts into genes by the first column, and gene names are not unique: the same release has 758 genes called `Y_RNA`. Use `tx2gene` to turn an id into a name.
+- **`bed12` follows the UCSC convention for non-coding transcripts**: thickStart equals thickEnd. It is made with UCSC's `gtfToGenePred` and `genePredToBed`, not `gffread --bed`, which marks a whole non-coding transcript as coding.
+- **`gtf_indexed` has the provider's records, every one and unchanged; only their order differs.** The sort is stable, so a gene stays ahead of its transcripts and a transcript ahead of its exons. Where order does not matter, the provider's own asset (`ensembl_gtf` and its like) is still the annotation as delivered.
+- **`twobit` is checked, not assumed.** After writing it, the sequence names and lengths are read back out of the `.2bit` and must equal the genome's own, or nothing is registered. Soft-masking is kept.
+
+On the human genome the four annotation assets take about three and a half minutes and 2.4 GB of memory in one task. Only what the vault lacks is registered, so removing one asset and running again rebuilds that one.
+
 ### Running on an SGE cluster
 
 `--profile sge` adds a scheduler profile for the UCL Research Computing clusters (Myriad, Kathleen, Young) on top of conda:
@@ -564,13 +604,14 @@ No aligner or quantifier indexes are built. An index depends on a tool version a
 bash run_pipeline.sh requests/requests_raw.csv --profile sge
 ```
 
-Only the transcriptome derivation is submitted as a job. Everything else stays on the machine you launched from, for a reason each:
+Only the derivations are submitted as jobs. Everything else stays on the machine you launched from, for a reason each:
 
 | Step | Runs | Why |
 |---|---|---|
 | Download (`FETCH_GENOME`) | where you launched | needs outbound network, which compute nodes often lack |
 | Preflight and registration | where you launched | they read and edit the vault's single config |
 | Transcriptome (`DERIVE_TXOME`) | compute node | needs neither; 1 core, 4 GB, 2 h |
+| Small derived assets (`DERIVE_ANNOTATION`, `DERIVE_TWOBIT`) | compute node | need neither; 1 core, 6 GB and 8 GB, 2 h |
 
 So the downloading and compressing, which is the slow part, still happens on the launching machine. If your site does not allow that on a login node, launch the pipeline from an interactive session or a transfer node that has network access.
 
@@ -664,6 +705,7 @@ Two operational notes:
   - **The download record says what was downloaded.** `provenance.json` gains source URLs, the assembly accession and taxon, the masking and alt-contig settings, SHA-256 checksums of each file and of its contents, a summary of the annotation, tool versions and a UTC timestamp. It used to hold the four request fields and a local-time stamp. See *The download record*.
   - **The record lives in the vault**, as the `provenance` asset, tagged by annotation release and reachable by every alias. The NCBI assembly report, which maps each sequence's name between naming schemes, is kept beside it as `assembly_report`. `<outdir>/provenance/index.tsv` lists the whole vault as a plain table.
   - **The vault describes itself as an RO-Crate.** `<outdir>/ro-crate-metadata.json` lists every genome, asset and file, and each download, derivation and fetch as a `CreateAction` (RO-Crate 1.1, Process Run Crate 0.5). The `provenance.json` files are unchanged and are listed in it. The crate and `index.tsv` are now rewritten after every registration; the index used to be written once, before transcriptomes and resources were added, so its `assets` column missed whatever the same run registered afterwards. See *The vault as an RO-Crate*.
+  - **Every run derives the small files pipelines ask for** (`--no-derived` to skip): `tx2gene`, `gtf_indexed`, `bed12` and `refflat` from each annotation, tagged with its release, and `twobit` from each genome. Derived from what the vault holds, each with its own provenance record and its parents recorded. See *Small derived assets*.
   - **Every run derives a transcriptome** for each annotated genome (`--no-txome` to skip). Derived from the vault's own genome and GTF with gffread, registered as `fasta_txome` and tagged with the annotation release, with both inputs recorded as parents. Never a provider's cDNA download. See *Transcriptome*.
   - **An `sge` profile (`--profile sge`)** for the UCL clusters, ported from rnaseq-flow. Only the transcriptome derivation is submitted; downloads and registration stay on the launching machine. See *Running on an SGE cluster*.
   - **A preflight asks the vault before downloading.** Requests the vault already satisfies are skipped, so re-runs no longer depend on Nextflow's `work/` cache surviving. An unpinned annotation is fetched again when the provider publishes a newer release, and gains a tag. `--refetch` downloads everything regardless. See *Genomes already in the vault are not downloaded again*.

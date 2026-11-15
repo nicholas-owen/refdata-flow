@@ -78,7 +78,7 @@ class NextflowTestCase(unittest.TestCase):
 
     @classmethod
     def nextflow(cls, requests, outdir, *extra, stub=True, env=None,
-                 register=False, venv_bin=BIN_DIR, default_txome=False):
+                 register=False, venv_bin=BIN_DIR, default_txome=False, default_derived=False):
         # Most tests here are about the download side and pass --register false, so
         # they run wherever nextflow does. The Registration tests turn it on and
         # point REGISTER at the interpreter running this suite, which is the
@@ -95,6 +95,10 @@ class NextflowTestCase(unittest.TestCase):
         # one of them covers the default itself.
         if register and "--txome" not in extra and not default_txome:
             command += ["--txome", "false"]
+        # The same goes for the small derived assets (tx2gene and the rest): on by
+        # default, off here unless a test asks, and covered by DerivedAssets.
+        if register and "--derived" not in extra and not default_derived:
+            command += ["--derived", "false"]
         command += extra
         if stub:
             command.append("-stub")
@@ -555,6 +559,146 @@ class Resources(NextflowTestCase):
 def gffread_unavailable():
     return ingest_unavailable() or (
         None if shutil.which("gffread") else "gffread is not on PATH")
+
+
+@unittest.skipIf(ingest_unavailable(), ingest_unavailable())
+class DerivedAssets(NextflowTestCase):
+    """
+    The small derived assets: tx2gene, gtf_indexed, bed12 and refflat from each
+    annotation, twobit from each genome.
+
+    The class's main run passes no --derived flag: they are part of every run by
+    default, and this is the test that they are. Under -stub the files themselves
+    are stand-ins; which genomes get what, the staging and the registration are
+    real. tests/test_derive.py runs the real tools.
+    """
+
+    FROM_ANNOTATION = ["bed12", "gtf_indexed", "refflat", "tx2gene"]
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        cls.outdir = os.path.join(cls.work, "out")
+        cls.requests = cls.write_requests("requests_resolved.csv", REQUESTS)
+        cls.run_result = cls.nextflow(cls.requests, cls.outdir, register=True,
+                                      default_derived=True)
+
+    def submitted(self, process, output=None):
+        return sorted(line.split(f"{process} (")[1].rstrip(")")
+                      for line in (output or self.run_result.stdout).splitlines()
+                      if f"Submitted process > {process} (" in line)
+
+    def refgenie(self, *arguments):
+        env = dict(os.environ, PATH=BIN_DIR + os.pathsep + os.environ.get("PATH", ""))
+        result = subprocess.run(
+            [sys.executable, REFGENIE, *arguments, "-c",
+             os.path.join(self.outdir, "refgenie_export.yaml")],
+            cwd=self.work, env=env, text=True, capture_output=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        # `seek` prints a path; `remove` prints nothing on stdout.
+        lines = result.stdout.strip().splitlines()
+        return lines[-1] if lines else ""
+
+    def test_01_run_succeeds(self):
+        self.assertEqual(self.run_result.returncode, 0, self.run_result.stdout[-3000:])
+
+    def test_02_one_task_per_annotation_and_one_per_genome(self):
+        # Both Ensembl releases and the GENCODE genome have an annotation to derive
+        # from. The sequence-only genome does not, and still gets its .2bit.
+        self.assertEqual(self.submitted("DERIVE_ANNOTATION"),
+                         ["toyAsm_ensembl:110", "toyAsm_ensembl:999", "toyAsm_gencode:999"])
+        self.assertEqual(self.submitted("DERIVE_TWOBIT"),
+                         ["seqOnly_ncbi", "toyAsm_ensembl", "toyAsm_gencode"])
+        self.assertEqual(len(self.submitted("REGISTER_ASSET")), 3 * 4 + 3)
+
+    def test_03_annotation_assets_are_tagged_by_release_with_the_annotation_as_parent(self):
+        vault = load_vault(self.outdir)
+        with open(os.path.join(self.outdir, "refgenie_export.yaml")) as f:
+            genomes = yaml.safe_load(f)["genomes"]
+        digest = next(d for d, g in genomes.items() if "toyAsm_ensembl" in g["aliases"])
+        for asset in self.FROM_ANNOTATION:
+            held = vault["toyAsm_ensembl"]["assets"][asset]
+            self.assertEqual(set(held["tags"]), {"110", "999"}, asset)
+            self.assertEqual(str(held["default_tag"]), "999", asset)
+            for release in ("110", "999"):
+                self.assertEqual(held["tags"][release]["asset_parents"],
+                                 [f"{digest}/ensembl_gtf:{release}"], asset)
+            self.assertNotIn(asset, vault["seqOnly_ncbi"]["assets"])
+
+    def test_04_twobit_is_per_genome_with_the_fasta_as_parent(self):
+        vault = load_vault(self.outdir)
+        for genome in ("toyAsm_ensembl", "toyAsm_gencode", "seqOnly_ncbi"):
+            held = vault[genome]["assets"]["twobit"]
+            self.assertEqual(set(held["tags"]), {"default"}, genome)
+            self.assertEqual([p.split("/")[1] for p in held["tags"]["default"]["asset_parents"]],
+                             ["fasta:default"], genome)
+
+    def test_05_each_is_reachable_by_alias_under_a_name_that_says_what_it_is(self):
+        expected = {
+            "tx2gene": "mouse_gc.tx2gene.tsv",
+            "gtf_indexed": "mouse_gc.sorted.gtf.gz",
+            "gtf_indexed.tbi": "mouse_gc.sorted.gtf.gz.tbi",
+            "bed12": "mouse_gc.bed",
+            "refflat": "mouse_gc.refFlat.txt",
+            "twobit": "mouse_gc.2bit",
+            "tx2gene.provenance": "mouse_gc.provenance.json",
+        }
+        for seek, name in expected.items():
+            path = self.refgenie("seek", f"mouse_gc/{seek}")
+            self.assertEqual(os.path.basename(path), name)
+            self.assertTrue(os.path.isfile(path), path)
+        with open(self.refgenie("seek", "mouse_gc/tx2gene")) as f:
+            self.assertEqual([line.split("\t")[0] for line in f], ["t1"])
+        with open(self.refgenie("seek", "mouse_gc/bed12.provenance")) as f:
+            record = json.load(f)
+        self.assertEqual((record["asset"], record["annotation"]), ("bed12", "gencode_gtf:999"))
+
+    def test_06_index_and_crate_list_them(self):
+        with open(os.path.join(self.outdir, "provenance", "index.tsv")) as f:
+            index = f.read()
+        for held in ("tx2gene:110,999", "gtf_indexed:110,999", "twobit:default"):
+            self.assertIn(held, index)
+        with open(os.path.join(self.outdir, "ro-crate-metadata.json")) as f:
+            graph = json.load(f)["@graph"]
+        derived = sorted(e["@id"].split("-")[1] for e in graph
+                         if e["@type"] == "CreateAction" and e["@id"].startswith("#derive-"))
+        self.assertEqual(derived, sorted(self.FROM_ANNOTATION * 3 + ["twobit"] * 3))
+        tx2gene = next(e for e in graph if e["@id"].startswith("#derive-tx2gene-")
+                       and e["@id"].endswith("-110"))
+        self.assertTrue(tx2gene["object"]["@id"].endswith(".gtf.gz"), tx2gene["object"])
+        self.assertIn("/ensembl_gtf/110/", tx2gene["object"]["@id"])
+
+    def test_07_second_run_derives_and_registers_nothing(self):
+        result = self.nextflow(self.requests, self.outdir, register=True, default_derived=True)
+        self.assertEqual(result.returncode, 0, result.stdout[-3000:])
+        for process in ("DERIVE_ANNOTATION", "DERIVE_TWOBIT", "REGISTER_ASSET"):
+            self.assertNotIn(process, result.stdout)
+
+    def test_08_only_what_the_vault_lacks_is_registered(self):
+        # One asset of one genome removed by hand. The task that makes all four
+        # runs again for that annotation, and only the missing one is registered.
+        self.refgenie("remove", "toyAsm_gencode/bed12:999", "-f")
+        self.assertNotIn("bed12", load_vault(self.outdir)["toyAsm_gencode"]["assets"])
+        result = self.nextflow(self.requests, self.outdir, register=True, default_derived=True)
+        self.assertEqual(result.returncode, 0, result.stdout[-3000:])
+        self.assertEqual(self.submitted("DERIVE_ANNOTATION", result.stdout), ["toyAsm_gencode:999"])
+        self.assertEqual(self.submitted("DERIVE_TWOBIT", result.stdout), [])
+        self.assertEqual(self.submitted("REGISTER_ASSET", result.stdout),
+                         ["toyAsm_gencode/bed12:999"])
+        self.assertIn("bed12", load_vault(self.outdir)["toyAsm_gencode"]["assets"])
+
+    def test_09_derived_false_makes_none_and_a_later_run_adds_them(self):
+        outdir = os.path.join(self.work, "later.out")
+        without = self.nextflow(self.requests, outdir, register=True)
+        self.assertEqual(without.returncode, 0, without.stdout[-3000:])
+        self.assertNotIn("DERIVE_", without.stdout)
+        self.assertNotIn("twobit", load_vault(outdir)["seqOnly_ncbi"]["assets"])
+        result = self.nextflow(self.requests, outdir, register=True, default_derived=True)
+        self.assertEqual(result.returncode, 0, result.stdout[-3000:])
+        self.assertNotIn("FETCH_GENOME", result.stdout)
+        self.assertEqual(len(self.submitted("DERIVE_ANNOTATION", result.stdout)), 3)
+        self.assertIn("twobit", load_vault(outdir)["seqOnly_ncbi"]["assets"])
 
 
 @unittest.skipIf(gffread_unavailable(), gffread_unavailable())

@@ -86,6 +86,15 @@ def rejectDuplicates(List rows) {
     return rows
 }
 
+// Whether the manifest's `assets` column ("asset:tag,tag;asset:tag") says the
+// vault holds `asset` at `tag`.
+def holds(assets, String asset, String tag) {
+    return (assets ?: '').toString().tokenize(';').any { item ->
+        def parts = item.tokenize(':')
+        parts.size() == 2 && parts[0] == asset && parts[1].tokenize(',').contains(tag)
+    }
+}
+
 process FETCH_GENOME {
     tag "${species}_${assembly}"
 
@@ -434,6 +443,82 @@ process DERIVE_TXOME {
 // The stub writes a two-line file on the genome's first sequence, so that the
 // real compatibility check which follows has something true to pass; it reports
 // SKIP when the genome already holds the resource, as the real script would.
+// The small files pipelines ask for alongside a GTF, derived from one annotation:
+// tx2gene, a sorted and indexed GTF, BED12 and refFlat. One task makes all four,
+// because all four start by reading the same GTF and three of them share a
+// conversion; `missing` says which of them the vault lacks, and only those are
+// registered. bin/derive_annotation.sh is the whole of the work and documents the
+// choices in it.
+//
+// It has no conda directive of its own on purpose: the conda profile's default
+// environment already holds gtfToGenePred, genePredToBed, bgzip and tabix,
+// because genomepy needs them, so this builds nothing new.
+process DERIVE_ANNOTATION {
+    tag "${genome}:${release}"
+    label 'derive'
+    cpus 1
+    memory '6 GB'
+    time '2h'
+
+    input:
+    tuple val(genome), val(annotation_asset), val(release), path(gtf), val(missing)
+
+    output:
+    tuple val(genome), val(annotation_asset), val(release), val(missing), path('derived')
+
+    script:
+    """
+    derive_annotation.sh "${genome}" "${annotation_asset}" "${release}" "${gtf}" derived "${workflow.manifest.version}"
+    """
+
+    // For `-stub`: the same nine files, made with nothing but coreutils. One
+    // made-up gene model per transcript_id; an index that is not an index.
+    stub:
+    """
+    mkdir derived
+    gzip -dcf "${gtf}" > annotation.gtf
+    grep -o 'transcript_id "[^"]*"' annotation.gtf | sort -u | sed 's/transcript_id "\\(.*\\)"/\\1/' > transcripts.txt
+    awk '{ print \$1 "\\tg_" \$1 "\\tg_" \$1 }' transcripts.txt > derived/tx2gene.tsv
+    sort -s -k1,1 -k4,4n annotation.gtf | gzip -nc > derived/sorted.gtf.gz
+    printf 'stub\\n' > derived/sorted.gtf.gz.tbi
+    awk '{ print "1\\t0\\t10\\t" \$1 "\\t0\\t+\\t10\\t10\\t0\\t1\\t10,\\t0," }' transcripts.txt > derived/transcripts.bed
+    awk '{ print "g_" \$1 "\\t" \$1 "\\t1\\t+\\t0\\t10\\t10\\t10\\t1\\t0,\\t10," }' transcripts.txt > derived/refFlat.txt
+    n=\$(wc -l < transcripts.txt | tr -d ' ')
+    for asset in tx2gene gtf_indexed bed12 refflat; do
+        printf '{"stub": true, "asset": "%s", "genome": "%s", "annotation": "%s:%s", "tool": "stub", "transcripts": %s}\\n' \\
+            "\$asset" "${genome}" "${annotation_asset}" "${release}" "\$n" > "derived/\$asset.provenance.json"
+    done
+    """
+}
+
+// The genome as a .2bit, from the vault's FASTA. bin/derive_twobit.sh writes it
+// and then checks it against the genome's own names and lengths.
+process DERIVE_TWOBIT {
+    tag "${genome}"
+    label 'derive'
+    cpus 1
+    memory '8 GB'
+    time '2h'
+
+    input:
+    tuple val(genome), path(fasta), path(fai)
+
+    output:
+    tuple val(genome), path("${genome}.2bit"), path("${genome}.twobit.provenance.json")
+
+    script:
+    """
+    derive_twobit.sh "${genome}" "${fasta}" "${fai}" "${genome}.2bit" "${genome}.twobit.provenance.json"
+    """
+
+    stub:
+    """
+    cut -f 1,2 "${fai}" > "${genome}.2bit"
+    printf '{"stub": true, "asset": "twobit", "genome": "%s", "tool": "stub", "sequences": %s}\\n' \\
+        "${genome}" "\$(wc -l < "${fai}" | tr -d ' ')" > "${genome}.twobit.provenance.json"
+    """
+}
+
 process FETCH_RESOURCE {
     tag "${name}:${variant} for ${genome}"
     label 'network'
@@ -762,6 +847,80 @@ workflow {
             }
             .set { resource_assets_ch }
 
-        REGISTER_ASSET(vault, txome_assets_ch.mix(resource_assets_ch))
+        // The small derived assets: part of every run unless `--derived false`.
+        // Like the transcriptome they are worked out from the manifest, so a
+        // genome that has been in the vault for months gains them on the next run,
+        // and only what is missing is made. The manifest's `assets` column is what
+        // the vault holds for the genome: asset:tag,tag;asset:tag.
+        if( isTrue(params.derived) ) {
+            // What each annotation-derived asset is registered from: the recipe's
+            // key for the data file, and the file's name in the task's output.
+            def annotation_derived = [
+                tx2gene    : [['tx2gene', 'tx2gene.tsv']],
+                gtf_indexed: [['gtf', 'sorted.gtf.gz'], ['tbi', 'sorted.gtf.gz.tbi']],
+                bed12      : [['bed', 'transcripts.bed']],
+                refflat    : [['refflat', 'refFlat.txt']],
+            ]
+
+            REGISTER.out.manifest
+                .splitCsv(header: true, sep: '\t')
+                .filter { row -> row.gtf && row.annotation_tag }
+                .map { row ->
+                    tuple(row, annotation_derived.keySet().findAll { asset ->
+                        !holds(row.assets, asset, row.annotation_tag)
+                    }.toList())
+                }
+                .filter { _row, missing -> missing }
+                .unique { row, _missing -> "${row.vault_name}:${row.annotation_tag}".toString() }
+                .map { row, missing ->
+                    tuple(safe(row.vault_name, 'vault_name'),
+                          safe(row.annotation_asset, 'annotation_asset'),
+                          safe(row.annotation_tag, 'annotation_tag'),
+                          file(row.gtf), missing)
+                }
+                .set { annotation_derive_ch }
+
+            DERIVE_ANNOTATION(annotation_derive_ch)
+
+            // One registration per asset the vault lacked, each tagged with the
+            // annotation release and naming that annotation as its parent.
+            DERIVE_ANNOTATION.out
+                .flatMap { genome, annotation_asset, release, missing, derived ->
+                    missing.collect { asset ->
+                        def parts = annotation_derived[asset]
+                        tuple(genome, asset, release,
+                              parts.collect { part -> part[0] } + ['provenance'],
+                              parts.collect { part -> file("${derived}/${part[1]}") } +
+                                  [file("${derived}/${asset}.provenance.json")],
+                              ["annotation=${annotation_asset}:${release}".toString()])
+                    }
+                }
+                .set { annotation_assets_ch }
+
+            // One .2bit per genome, whether or not it has an annotation.
+            REGISTER.out.manifest
+                .splitCsv(header: true, sep: '\t')
+                .filter { row -> row.fasta && !holds(row.assets, 'twobit', 'default') }
+                .unique { row -> row.vault_name }
+                .map { row ->
+                    tuple(safe(row.vault_name, 'vault_name'), file(row.fasta), file("${row.fasta}.fai"))
+                }
+                .set { twobit_ch }
+
+            DERIVE_TWOBIT(twobit_ch)
+
+            DERIVE_TWOBIT.out
+                .map { genome, twobit, provenance ->
+                    tuple(genome, 'twobit', 'default', ['twobit', 'provenance'], [twobit, provenance], [])
+                }
+                .set { twobit_assets_ch }
+
+            annotation_assets_ch.mix(twobit_assets_ch).set { derived_assets_ch }
+        }
+        else {
+            channel.empty().set { derived_assets_ch }
+        }
+
+        REGISTER_ASSET(vault, txome_assets_ch.mix(resource_assets_ch).mix(derived_assets_ch))
     }
 }

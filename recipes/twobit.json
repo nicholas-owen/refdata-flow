@@ -1,0 +1,31 @@
+{
+  "name": "twobit",
+  "description": "The genome in UCSC's .2bit format, for the tools that read it that way: deepTools, BLAT, rtracklayer. DERIVED from the vault's own FASTA with faToTwoBit by bin/derive_twobit.sh, which then reads the names and lengths back out of the .2bit and refuses it unless they are the genome's own. Soft-masking is kept: lower-case sequence in the FASTA is masked in the .2bit. The fasta asset is recorded as the parent.",
+  "required_files": [
+    {
+      "key": "twobit",
+      "description": "the .2bit file written by the DERIVE_TWOBIT process"
+    },
+    {
+      "key": "provenance",
+      "description": "JSON record of how it was derived"
+    }
+  ],
+  "required_assets": [
+    {
+      "key": "genome_fasta",
+      "default": "fasta",
+      "description": "the genome this was written from"
+    }
+  ],
+  "required_parameters": [],
+  "container": "databio/refgenie",
+  "assets": {
+    "twobit": "{genome}.2bit",
+    "provenance": "{genome}.provenance.json"
+  },
+  "command_list": [
+    "cp {twobit} {asset_outfolder}/{genome}.2bit",
+    "cp {provenance} {asset_outfolder}/{genome}.provenance.json"
+  ]
+}

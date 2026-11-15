@@ -1,0 +1,31 @@
+{
+  "name": "refflat",
+  "description": "The annotation's gene models in refFlat format, the one Picard's CollectRnaSeqMetrics takes as REF_FLAT. Eleven tab-separated columns, no header. DERIVED from the vault's own annotation with UCSC's gtfToGenePred by bin/derive_annotation.sh. The first column is the gene_id, NOT the gene name: Picard groups transcripts into genes by it, and gene names are not unique (Ensembl human has hundreds of genes called Y_RNA), where gene_ids are. The tx2gene asset of the same tag maps each gene_id to its name. The tag is the annotation release, and the annotation asset is recorded as the parent.",
+  "required_files": [
+    {
+      "key": "refflat",
+      "description": "the refFlat file written by the DERIVE_ANNOTATION process"
+    },
+    {
+      "key": "provenance",
+      "description": "JSON record of how it was derived"
+    }
+  ],
+  "required_assets": [
+    {
+      "key": "annotation",
+      "default": "ensembl_gtf",
+      "description": "the annotation asset and release this was derived from; always given explicitly, since its name depends on the provider"
+    }
+  ],
+  "required_parameters": [],
+  "container": "databio/refgenie",
+  "assets": {
+    "refflat": "{genome}.refFlat.txt",
+    "provenance": "{genome}.provenance.json"
+  },
+  "command_list": [
+    "cp {refflat} {asset_outfolder}/{genome}.refFlat.txt",
+    "cp {provenance} {asset_outfolder}/{genome}.provenance.json"
+  ]
+}

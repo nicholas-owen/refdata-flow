@@ -364,7 +364,8 @@ class RegisterDerivedAsset(unittest.TestCase):
             f.write(f">t1\nACGTACGTAC\n>t2_release_{tag}\nTTGGCCAATT\n")
         provenance = os.path.join(self.work, f"provenance-{tag}.json")
         with open(provenance, "w") as f:
-            json.dump({"asset": "fasta_txome", "annotation": f"ensembl_gtf:{tag}"}, f)
+            json.dump({"asset": "fasta_txome", "annotation": f"ensembl_gtf:{tag}",
+                       "tool": "gffread", "tool_version": "0.12.7"}, f)
         return transcripts, provenance
 
     def register(self, tag, genome="toyAsm_ensembl", transcripts=None):

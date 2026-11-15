@@ -34,11 +34,12 @@ CLEANUP=0
 NONINTERACTIVE=0
 REFETCH=0
 TXOME=1
+DERIVED=1
 # Nextflow profiles. conda is always on - it supplies the tools - and --profile
 # adds to it, e.g. `--profile sge` runs with `-profile conda,sge`.
 PROFILES="conda"
 
-USAGE="Usage: bash run_pipeline.sh [requests.csv] [--outdir /path/to/save] [--no-txome] [--profile sge] [--cleanup] [--refetch] [--non-interactive] [--clean] [--dry-run] [--debug] [--version]"
+USAGE="Usage: bash run_pipeline.sh [requests.csv] [--outdir /path/to/save] [--no-txome] [--no-derived] [--profile sge] [--cleanup] [--refetch] [--non-interactive] [--clean] [--dry-run] [--debug] [--version]"
 
 # Parse command line arguments
 while [[ "$#" -gt 0 ]]; do
@@ -81,6 +82,12 @@ while [[ "$#" -gt 0 ]]; do
             # and GTF (the fasta_txome asset). There is no --txome flag to turn it
             # on, because it is on.
             TXOME=0
+            ;;
+        --no-derived)
+            # Skip the small derived assets: tx2gene, the sorted and indexed GTF,
+            # BED12 and refFlat for each annotation, and a .2bit for each genome.
+            # Like the transcriptome they are otherwise part of every run.
+            DERIVED=0
             ;;
         --profile)
             # An extra Nextflow profile, added to conda. Checked against a plain
@@ -411,6 +418,12 @@ if [ "$TXOME" -eq 1 ]; then
 else
     echo "[Step 2] --no-txome: no transcriptomes will be derived."
     NF_ARGS+=(--txome false)
+fi
+if [ "$DERIVED" -eq 1 ]; then
+    NF_ARGS+=(--derived true)
+else
+    echo "[Step 2] --no-derived: no tx2gene, indexed GTF, BED12, refFlat or .2bit will be derived."
+    NF_ARGS+=(--derived false)
 fi
 if [ "$DEBUG" -eq 1 ]; then
     echo "[Step 2] Debug mode: streaming per-task progress."

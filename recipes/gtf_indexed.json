@@ -1,0 +1,37 @@
+{
+  "name": "gtf_indexed",
+  "description": "The vault's annotation again, sorted by sequence name and start, compressed with bgzip and indexed with tabix, for the tools that read a GTF by region: VEP's --gtf, IGV, pysam. DERIVED by bin/derive_annotation.sh. The records are the provider's, every one and unchanged; only their order differs, and the sort is stable so a gene stays ahead of its transcripts and a transcript ahead of its exons. The annotation as delivered is still the provider's own asset (ensembl_gtf and its like), which is the one to use where order does not matter. The tag is the annotation release, and that asset is recorded as the parent.",
+  "required_files": [
+    {
+      "key": "gtf",
+      "description": "the sorted, bgzipped GTF written by the DERIVE_ANNOTATION process"
+    },
+    {
+      "key": "tbi",
+      "description": "its tabix index"
+    },
+    {
+      "key": "provenance",
+      "description": "JSON record of how it was derived"
+    }
+  ],
+  "required_assets": [
+    {
+      "key": "annotation",
+      "default": "ensembl_gtf",
+      "description": "the annotation asset and release this was derived from; always given explicitly, since its name depends on the provider"
+    }
+  ],
+  "required_parameters": [],
+  "container": "databio/refgenie",
+  "assets": {
+    "gtf_indexed": "{genome}.sorted.gtf.gz",
+    "tbi": "{genome}.sorted.gtf.gz.tbi",
+    "provenance": "{genome}.provenance.json"
+  },
+  "command_list": [
+    "cp {gtf} {asset_outfolder}/{genome}.sorted.gtf.gz",
+    "cp {tbi} {asset_outfolder}/{genome}.sorted.gtf.gz.tbi",
+    "cp {provenance} {asset_outfolder}/{genome}.provenance.json"
+  ]
+}
