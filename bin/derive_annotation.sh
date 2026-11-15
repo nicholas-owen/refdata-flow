@@ -32,6 +32,13 @@
 #     on different chromosomes or strands is one Picard cannot build.
 #     tx2gene.tsv maps the id to the name for anything that wants one.
 #
+#   * Even a gene_id can be in more than one place. RefSeq's is the gene symbol,
+#     and NCBI's GRCh38.p14 annotation has 1,899 of 43,897 genes with transcripts
+#     on more than one sequence or strand: the same gene on X and on Y, or on a
+#     chromosome and on a patch scaffold. Picard skips such a gene entirely, so
+#     refFlat names it with its place, ABO@9 and ABO@HG2030_PATCH. Ensembl and
+#     GENCODE have none, and their refFlat is the gene_id throughout.
+#
 #   * BED12 comes from UCSC's gtfToGenePred and genePredToBed, not from
 #     `gffread --bed`. Checked on Ensembl human 116: gffread marks the whole of a
 #     non-coding transcript as coding sequence (thickStart..thickEnd), where the
@@ -179,8 +186,32 @@ gtfToGenePred -genePredExt -ignoreGroupsWithoutExons models.gtf marked.genePred
 awk -F'\t' -v OFS='\t' '{ sub(/~locus[0-9]+$/, "", $1); print }' marked.genePred > annotation.genePred
 genePredToBed annotation.genePred unsorted.bed
 sort -t "$tab" -k1,1 -k2,2n -k3,3n -k4,4 unsorted.bed > "$out/transcripts.bed"
-awk -F'\t' 'BEGIN { OFS = "\t" } { print $12, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10 }' annotation.genePred \
+# refFlat's first column is what Picard groups transcripts into genes by, and it
+# drops, whole and without saying so, any gene whose transcripts are not all on
+# one sequence and one strand. So a gene_id found in more than one such place is
+# written with the place: ABO@9 and ABO@HG2030_PATCH, and with the strand as well
+# where one sequence has it on both, G@7(+) and G@7(-). Every other gene_id is
+# written as it is. The file is read twice: once to learn where each gene is.
+awk -F'\t' -v OFS='\t' -v counts=split.txt '
+    NR == FNR {
+        if (!(($12, $2, $3) in seen)) {
+            seen[$12, $2, $3] = 1
+            if (++places[$12] == 2) split_genes++
+            strands[$12, $2]++
+        }
+        next
+    }
+    {
+        gene = $12
+        if (places[gene] > 1) gene = gene "@" $2 (strands[$12, $2] > 1 ? "(" $3 ")" : "")
+        print gene, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10
+    }
+    END { print split_genes + 0 > counts }' annotation.genePred annotation.genePred \
     | sort -t "$tab" -k3,3 -k5,5n -k6,6n -k2,2 > "$out/refFlat.txt"
+split_genes=$(cat split.txt)
+if [ "$split_genes" -ne 0 ]; then
+    echo "[$genome] NOTE: $split_genes gene id(s) in $annotation_asset:$release have transcripts on more than one sequence or strand. refflat names each with its place (gene@sequence), because Picard skips a gene that is not all in one place."
+fi
 
 # A model per place a transcript is annotated: the transcripts, plus one for each
 # further place an id is used at.
@@ -221,6 +252,6 @@ record bed12 genePredToBed "$ucsc_version" \
     "\"models\": $models, \"transcripts_in_annotation\": $transcripts, \"transcript_ids_at_more_than_one_place\": $repeated"
 record refflat gtfToGenePred "$ucsc_version" \
     "gtfToGenePred -genePredExt -ignoreGroupsWithoutExons ANNOTATION.gtf A.genePred; columns 12,1-10; sort -k3,3 -k5,5n" \
-    "\"gene_column\": \"gene_id\", \"models\": $models, \"transcripts_in_annotation\": $transcripts, \"transcript_ids_at_more_than_one_place\": $repeated"
+    "\"gene_column\": \"gene_id, or gene_id@sequence for a gene on more than one sequence or strand\", \"genes_on_more_than_one_sequence_or_strand\": $split_genes, \"models\": $models, \"transcripts_in_annotation\": $transcripts, \"transcript_ids_at_more_than_one_place\": $repeated"
 
 echo "[$genome] $annotation_asset:$release -> $transcripts transcripts of $genes genes; $models gene models; $records GTF records on $sequences sequences"

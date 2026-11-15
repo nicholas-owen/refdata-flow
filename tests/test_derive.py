@@ -152,8 +152,44 @@ class Annotation(ScriptTestCase):
             "g1\tt1b\t1\t+\t49\t60\t60\t60\t1\t49,\t60,",
             "g2\tt2\t2\t-\t0\t30\t2\t10\t2\t0,20,\t10,30,",
         ])
-        self.assertEqual(self.record("derived", "refflat.provenance.json")["gene_column"],
-                         "gene_id")
+        record = self.record("derived", "refflat.provenance.json")
+        self.assertTrue(record["gene_column"].startswith("gene_id"))
+        self.assertEqual(record["genes_on_more_than_one_sequence_or_strand"], 0)
+
+    def test_refflat_names_a_gene_by_its_place_where_it_is_in_more_than_one(self):
+        # Picard drops, whole, a gene whose transcripts are not all on one sequence
+        # and strand. RefSeq's gene_id is the symbol, so it has such genes: on X and
+        # on Y, or on a chromosome and on a patch.
+        def exon(sequence, strand, start, gene, transcript):
+            return (f"{sequence}\tsrc\texon\t{start}\t{start + 9}\t.\t{strand}\t.\t"
+                    f"{attributes(gene, transcript)}\n")
+        gtf = "".join([
+            exon("9", "+", 1, "ABO", "NM_1.1"), exon("9", "+", 21, "ABO", "NM_2.1"),
+            exon("PATCH", "+", 1, "ABO", "NM_1.1_2"),
+            exon("7", "+", 1, "BOTH", "NM_3.1"), exon("7", "-", 41, "BOTH", "NM_4.1"),
+            exon("8", "-", 1, "BOTH", "NM_5.1"),
+            exon("9", "-", 61, "ONE", "NM_6.1"),
+        ])
+        self.assertEqual(self.derive(gtf).returncode, 0)
+        named = {line.split("\t")[1]: line.split("\t")[0]
+                 for line in self.lines("derived", "refFlat.txt")}
+        self.assertEqual(named, {
+            "NM_1.1": "ABO@9", "NM_2.1": "ABO@9", "NM_1.1_2": "ABO@PATCH",
+            # The strand as well, only where one sequence has the gene on both.
+            "NM_3.1": "BOTH@7(+)", "NM_4.1": "BOTH@7(-)", "NM_5.1": "BOTH@8",
+            "NM_6.1": "ONE",
+        })
+        # What Picard needs: every name in column one is on one sequence and strand.
+        places = {}
+        for line in self.lines("derived", "refFlat.txt"):
+            fields = line.split("\t")
+            places.setdefault(fields[0], set()).add((fields[2], fields[3]))
+        self.assertEqual({len(where) for where in places.values()}, {1})
+        self.assertEqual(self.record("derived", "refflat.provenance.json")
+                         ["genes_on_more_than_one_sequence_or_strand"], 2)
+        # tx2gene keeps the gene_id itself.
+        self.assertEqual({line.split("\t")[1] for line in self.lines("derived", "tx2gene.tsv")},
+                         {"ABO", "BOTH", "ONE"})
 
     def test_transcript_id_used_on_two_sequences_gets_a_model_on_each(self):
         # RefSeq has pseudo-autosomal genes on X and on Y under one accession. An
@@ -178,8 +214,8 @@ class Annotation(ScriptTestCase):
             "Y\t20\t50\tNM_000451.4\t0\t+\t50\t50\t0\t1\t30,\t0,",
         ])
         self.assertEqual([line.split("\t")[:3] for line in self.lines("derived", "refFlat.txt")],
-                         [["SHOX", "NM_000451.4", "X"], ["g2", "t2", "X"],
-                          ["SHOX", "NM_000451.4", "Y"]])
+                         [["SHOX@X", "NM_000451.4", "X"], ["g2", "t2", "X"],
+                          ["SHOX@Y", "NM_000451.4", "Y"]])
         record = self.record("derived", "bed12.provenance.json")
         self.assertEqual((record["models"], record["transcripts_in_annotation"],
                           record["transcript_ids_at_more_than_one_place"]), (3, 2, 1))
