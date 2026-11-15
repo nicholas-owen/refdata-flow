@@ -557,7 +557,7 @@ What you get, and what to know about it:
 - **Sequence is upper case.** The genomes here are soft-masked, so the transcripts would otherwise carry lower-case repeats that no provider's cDNA has.
 - **Nothing is filtered.** Restricting to protein-coding, or dropping retained introns, is an analysis decision and is left to the analysis.
 - **Headers are transcript IDs**, as in the GTF, followed by `CDS=start-end` for coding transcripts.
-- **`<alias>.provenance.json`** in the asset records the gffread version, the command and the transcript count.
+- **`<alias>.provenance.json`** in the asset records the gffread version, the command, the transcript count and when it was derived. A transcriptome derived before the time was recorded has none, and keeps its record; `refgenie remove <alias>/fasta_txome:<release> -f` followed by an ordinary run derives it again with one.
 - **The file is called `<alias>.fa`**, the same name as the genome's FASTA one directory over (`alias/human/fasta_txome/116/human.fa` and `alias/human/fasta/default/human.fa`). Tell them apart by the directory.
 
 It runs after registration, so it also covers genomes already in the vault: a vault built before transcriptomes existed, or with `--no-txome`, gains them on its next ordinary run. Nothing is downloaded for that, and only missing transcriptomes are derived. A genome requested with `annotation=false` gets none. If an annotation's contig names do not match its genome, the derivation fails saying so, and nothing is registered.

@@ -771,6 +771,13 @@ class RealDerivation(NextflowTestCase):
         self.assertRegex(record["tool_version"], r"\d+\.\d+")
         self.assertEqual((record["transcripts"], record["sequence_case"]), (2, "upper"))
         self.assertEqual(record["annotation"], "ensembl_gtf:116")
+        # When it was made, in the form the other derived assets use; it is what
+        # gives the derivation an end time in the vault's RO-Crate.
+        self.assertRegex(record["derived_utc"], r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\+00:00$")
+        with open(os.path.join(outdir, "ro-crate-metadata.json")) as f:
+            derivation, = [e for e in json.load(f)["@graph"]
+                           if e["@id"].startswith("#derive-fasta_txome-")]
+        self.assertEqual(derivation["endTime"], record["derived_utc"])
 
     def test_annotation_whose_contigs_are_not_in_the_genome_is_an_error(self):
         # A chr-named GTF beside a genome whose contigs are 1 and 2. gffread

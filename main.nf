@@ -408,8 +408,8 @@ process DERIVE_TXOME {
     awk '/^>/ {print; next} {print toupper(\$0)}' transcripts.fa | gzip -nc > "${genome}.transcripts.fa.gz"
 
     version=\$(gffread --version 2>&1 | head -n 1)
-    printf '{"asset": "fasta_txome", "genome": "%s", "annotation": "%s:%s", "tool": "gffread", "tool_version": "%s", "command": "gffread -w transcripts.fa -g GENOME.fa ANNOTATION.gtf", "sequence_case": "upper", "transcripts": %s}\\n' \\
-        "${genome}" "${annotation_asset}" "${release}" "\$version" "\$n" > "${genome}.provenance.json"
+    printf '{"asset": "fasta_txome", "genome": "%s", "annotation": "%s:%s", "tool": "gffread", "tool_version": "%s", "command": "gffread -w transcripts.fa -g GENOME.fa ANNOTATION.gtf", "derived_utc": "%s", "sequence_case": "upper", "transcripts": %s}\\n' \\
+        "${genome}" "${annotation_asset}" "${release}" "\$version" "\$(date -u +%Y-%m-%dT%H:%M:%S+00:00)" "\$n" > "${genome}.provenance.json"
     """
 
     // For `-stub`: one short record per transcript_id in the GTF, with no gffread.
