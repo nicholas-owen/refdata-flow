@@ -266,6 +266,8 @@ vep --offline --cache --dir_cache "$(refgenie seek human/vep_cache)" --cache_ver
 - **It is checked against the genome in the form a cache allows.** A cache is a directory per sequence, holding a file per million bases. At least 95% of your genome's bases must be on sequences the cache has a directory for, and no file may start beyond the end of its sequence.
 - **Ensembl posts no md5 for it.** The archive is compared with the size Ensembl announces and read to its end before it is registered, which catches a transfer that was cut short.
 - **Use it with the VEP of the same number.** A cache is tied to its release.
+- **Yeast is numbered differently.** Ensembl publishes yeast through Ensembl Genomes, whose releases have their own numbers: 63 alongside Ensembl 116. An Ensembl yeast annotation is therefore tagged `63`, and so is its cache, which is fetched from Ensembl Genomes and used with `--cache_version 63`.
+- **A release with no cache is not retried.** If the publisher has no file for the release your annotation is at, the fetch stops once and says so.
 
 **The size is checked before a large download starts.** Each fetch compares the size the publisher announces with the space free in Nextflow's `work/` and stops, without retrying, if the file cannot fit. That is a floor, not a budget: a resource is held once as fetched and once in the vault, and a renamed one a third time in between, until `work/` is cleaned.
 

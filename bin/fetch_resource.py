@@ -35,7 +35,8 @@ The output directory always exists afterwards. It holds either the file and
 <name>.fetch.json, or a single file called SKIP saying why nothing was fetched.
 
 Exit 3 means the request cannot be met and trying again would not help (no room
-for the file, no annotation release to follow); the workflow does not retry it.
+for the file, no annotation release to follow, no file at the address); the
+workflow does not retry it.
 """
 import argparse
 import base64
@@ -46,6 +47,7 @@ import os
 import re
 import shutil
 import sys
+import urllib.error
 import urllib.request
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
@@ -232,6 +234,19 @@ def fetch(source, name, label, held, outdir, no_release_check, release=None, wha
         print(f"         the registry says it is {source['size']}", flush=True)
     try:
         sha256, md5, size, headers = download(url, destination)
+    except urllib.error.HTTPError as e:
+        if e.code not in (403, 404, 410):
+            print(f"ERROR: could not fetch {url}: {e}", file=sys.stderr)
+            sys.exit(1)
+        # The publisher answered, and the answer is that there is no such file.
+        # Asking again gets the same answer, so this is not retried.
+        raise Refusal(
+            f"the publisher has no file at {url} (HTTP {e.code})"
+            + (f". That address is built from release {tag} of this genome's annotation: "
+               "no file is published for that release, or the publisher keeps this "
+               "species' releases somewhere else"
+               if source["version"] == "annotation_release" else
+               ". The address in the registry is out of date"))
     except OSError as e:
         print(f"ERROR: could not fetch {url}: {e}", file=sys.stderr)
         sys.exit(1)

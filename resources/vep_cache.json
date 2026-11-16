@@ -28,11 +28,11 @@
       "naming": "Ensembl: 1, 2, X, MT. Fits an Ensembl GRCm39 genome, at the release its annotation is at; not a UCSC- or NCBI-named one."
     },
     "R64-1-1": {
-      "url": "https://ftp.ensembl.org/pub/release-{release}/variation/indexed_vep_cache/saccharomyces_cerevisiae_vep_{release}_R64-1-1.tar.gz",
+      "url": "https://ftp.ebi.ac.uk/ensemblgenomes/pub/release-{release}/fungi/variation/indexed_vep_cache/saccharomyces_cerevisiae_vep_{release}_R64-1-1.tar.gz",
       "version": "annotation_release",
       "annotation": "ensembl_gtf",
       "size": "about 60 MB packed",
-      "naming": "Ensembl: I, II, XVI, Mito. Fits an Ensembl R64-1-1 genome, at the release its annotation is at; not a UCSC- or NCBI-named one."
+      "naming": "Ensembl: I, II, XVI, Mito. Fits an Ensembl R64-1-1 genome, at the release its annotation is at; not a UCSC- or NCBI-named one. Yeast comes from Ensembl Genomes, which numbers its releases separately (63 beside Ensembl 116), and so does its cache."
     }
   }
 }

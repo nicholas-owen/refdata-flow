@@ -504,6 +504,32 @@ class FetchSources(TempDirTestCase):
         self.assertEqual(code, 0, self.stderr)
         self.assertIn("thing_116_toy.tar.gz", files)
 
+    def test_release_the_publisher_has_no_file_for_is_refused_and_not_retried(self):
+        # Seen for real: yeast's annotation is at Ensembl Genomes release 63, and
+        # the address built from it did not exist. A 404 is an answer, not a fault.
+        import urllib.error
+        missing = urllib.error.HTTPError(self.AT_116, 404, "Not Found", {}, None)
+
+        class Missing:
+            def __enter__(self):
+                raise missing
+
+            def __exit__(self, *exc):
+                return False
+
+        code, files = self.fetch(self.PER_RELEASE, {("GET", self.AT_116): Missing()},
+                                 kind="vep_cache", extra=["--annotation", "ensembl_gtf:116"])
+        self.assertEqual((code, files), (fetch_resource.EXIT_NO_RETRY, []))
+        self.assertIn("has no file at", self.stderr)
+        self.assertIn("release 116 of this genome's annotation", self.stderr)
+
+        # A server that is merely unwell is a different matter, and is retried.
+        unwell = urllib.error.HTTPError(self.AT_116, 503, "Unavailable", {}, None)
+        missing = unwell
+        code, _ = self.fetch(self.PER_RELEASE, {("GET", self.AT_116): Missing()},
+                             kind="vep_cache", extra=["--annotation", "ensembl_gtf:116"])
+        self.assertEqual(code, 1)
+
     def test_genome_without_that_annotation_is_refused_and_not_retried(self):
         for annotation, said in (("", "without an annotation"),
                                  ("ucsc_gtf:20210210", "with 'ucsc_gtf:20210210'")):
