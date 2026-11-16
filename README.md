@@ -3,13 +3,15 @@
 </p>
 
 
-This project provides an automated workflow for downloading bioinformatics reference datasets - genomic DNA sequence (FASTA) and gene annotation (GTF) - for multiple species, cataloguing them in a [refgenie](http://refgenie.databio.org/) vault, and deriving a transcriptome for each from the two.
+This project provides an automated workflow for downloading bioinformatics reference datasets - genomic DNA sequence (FASTA) and gene annotation (GTF) - for multiple species, cataloguing them in a [refgenie](http://refgenie.databio.org/) vault, and deriving from the two the files analyses ask for beside a genome. It also fetches the third-party resources you name, such as ClinVar, the GATK known-sites files, dbSNP or a VEP cache, and registers each only after checking it against its genome; and it files databases that belong to no genome, such as Swiss-Prot or a Kraken 2 index, beside the vault.
 
 It runs in **four stages**, wrapped by a single script:
 1. **Resolve** - an interactive Python step (`resolve.py`) turns generic queries (like `grch38` or `mouse`) into exact assembly requests.
-2. **Download** - a **Nextflow** pipeline fetches the files in parallel via the **genomepy** engine, suitable for HPC compute nodes.
+2. **Download** - a **Nextflow** pipeline asks the vault what it already holds, then fetches the rest in parallel via the **genomepy** engine.
 3. **Catalogue** - once every download has finished, the same Nextflow run registers the results in a refgenie vault with human-readable aliases (the `REGISTER` process, which runs `update_refgenie.py`).
-4. **Derive** - for each genome with an annotation, a transcriptome is cut from the vault's own FASTA and GTF with **gffread** and registered beside them (see [Transcriptome](#transcriptome)).
+4. **Derive and check** - for each genome with an annotation, a transcriptome is cut from the vault's own FASTA and GTF with **gffread**, and the small derived files (`tx2gene`, an indexed GTF, BED12, refFlat, `.2bit`) are made beside it (see [Transcriptome](#transcriptome)). Requested resources are fetched, checked against their genome and registered (see [Third-party resources](#third-party-resources-clinvar-the-encode-blacklist)).
+
+![The pipeline as a metro map](refdata-flow_map.svg)
 
 ## Prerequisites
 
@@ -588,7 +590,7 @@ If the release cannot be identified - an unreachable provider, say - the asset i
 │       │   ├── 89c2a7e1....fa.fai
 │       │   ├── 89c2a7e1....dict        <-- sequence dictionary, for GATK and Picard
 │       │   └── 89c2a7e1....chrom.sizes
-│       └── ensembl_gtf/default/    <-- asset named for the provider recipe, not "annotation"
+│       └── ensembl_gtf/116/        <-- named for the provider recipe; tagged with the release
 │           ├── 89c2a7e1....gtf.gz
 │           ├── 89c2a7e1..._ensembl_TSS.bed
 │           └── 89c2a7e1..._ensembl_gene_body.bed
@@ -600,8 +602,8 @@ If the release cannot be identified - an unreachable provider, say - the asset i
     │   │   ├── GRCh38.p14.fa.fai -> ...
     │   │   ├── GRCh38.p14.dict   -> ...
     │   │   └── GRCh38.p14.chrom.sizes -> ...
-    │   └── ensembl_gtf/default/
-    │       ├── GRCh38.p14.gtf.gz -> ../../../../data/89c2a7e1.../ensembl_gtf/default/...
+    │   └── ensembl_gtf/116/
+    │       ├── GRCh38.p14.gtf.gz -> ../../../../data/89c2a7e1.../ensembl_gtf/116/...
     │       └── GRCh38.p14_ensembl_TSS.bed -> ...
     │
     ├── GRCh38/                     <-- assembly stem
@@ -830,6 +832,7 @@ Two operational notes:
   - **Download tasks use the conda environment's own tools.** The wrapper used to put its virtual environment at the front of `PATH` before launching Nextflow, which left it ahead of the conda environment inside every task: downloads ran under the venv's Python and compressed each FASTA with the pysam stand-in for `bgzip`. The wrapper no longer exports it; only the `REGISTER` step uses the venv.
   - **Boolean and numeric parameters given on the command line are read correctly.** Nextflow passes them through as text, and Groovy treats the text `false` as true. This only became reachable with the new `--cleanup` and `--register` parameters, where `--cleanup false` would have switched cleanup on.
   - **`provenance.json` records `release_requested`**, so a download directory can be matched to the request it answers.
+  - **Documents.** The user guide, the talk (`refdata-flow deck.html`) and the workflow map are regenerated for the pipeline as it now is. The talk of 2026-05-27 claimed that refgenie's digest is a GA4GH refget hash, that nf-core pipelines read `REFGENIE`, and that the vault keeps genomes compressed; none of that was true, and it is withdrawn.
   - **Tests.** `tests/` holds an offline suite covering the resolver, the ingest against real refgenie, and `main.nf` itself through a new `stub:` block. CI runs all of it and fails if any test is skipped.
 - **0.9.1**: Harm-reduction release. Behaviour changes - read before upgrading.
   - **Source data is no longer deleted by default.** Cleanup of the downloaded assembly directories is now opt-in via `run_pipeline.sh --cleanup`, and even then runs only after the FASTA (and the GTF, if annotation was requested) is verified into the vault. Previously it ran unconditionally, including after a partially-failed ingest.
