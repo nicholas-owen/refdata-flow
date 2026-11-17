@@ -103,9 +103,9 @@ The documents are generated, so each has one source to edit. The generators live
 | Output | Source | Rebuild |
 |---|---|---|
 | `refdata-flow_User_Guide.docx` | `docs/build_user_guide.js` | `cd docs && npm run guide` |
-| `refdata-flow deck.html`, and in `docs/` the default, light and dark `.pptx` decks and their two image-only versions | `docs/deck_content.js` (the words and speaker notes), drawn by `docs/build_deck.js` and `docs/deck.css` | `cd docs && npm run deck` |
+| `refdata-flow deck.html`, and in `docs/` an editable deck (`refdata-flow_deck.pptx`) and an image-only one (`refdata-flow_deck_images.pptx`) | `docs/deck/`: `deck.json` (the order), `deck.css` (the look) and one file per slide in `slides/`, its speaker notes inside; drawn by `docs/build_deck.js` | `cd docs && npm run deck` |
 | `refdata-flow_map.svg` and `.png` | `docs/build_map.py` | `cd docs && npm run map` |
 
-You need [Node.js](https://nodejs.org/), and `npm install` in `docs/` once. The deck and the map are rendered on Windows: the image-only decks are exported by PowerPoint, and the map's PNG by Microsoft Edge. `npm run deck:pptx` builds the editable decks and the HTML deck without PowerPoint.
+You need [Node.js](https://nodejs.org/), and `npm install` in `docs/` once. The map's PNG is rendered by Microsoft Edge on Windows. The deck needs no PowerPoint: `build_deck.js` lays the slides out in a headless Edge (or Chrome, or the browser in `CHROMIUM_PATH`), photographs them for the image-only deck and measures them for the editable one. `docs/deck/README.md` says how to change the talk and keep it in step with its Slides artifact.
 
-The HTML deck runs in a browser: arrow keys move, `N` shows the speaker notes, `T` switches between the three themes, `P` prints.
+The HTML deck runs in a browser: arrow keys or a click move, `N` shows the speaker notes, `F` goes full screen, `P` prints.
