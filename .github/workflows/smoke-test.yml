@@ -91,7 +91,7 @@ jobs:
       - name: Unit, ingest and Nextflow tests
         run: |
           .venv/bin/python -m unittest discover -s tests -v 2>&1 | tee "$RUNNER_TEMP/tests.log"
-          if grep -q "skipped" "$RUNNER_TEMP/tests.log"; then
+          if grep -Eq "skipped=[1-9]" "$RUNNER_TEMP/tests.log"; then
             echo "::error::Some tests were skipped; CI must run all of them."
             exit 1
           fi

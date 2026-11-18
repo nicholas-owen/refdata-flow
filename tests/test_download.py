@@ -189,7 +189,10 @@ class WholeRecord(FileTestCase):
                 code = e.code or 0
         os.chdir(cwd)
         path = os.path.join(self.directory, "toyAsm", "provenance.json")
-        record = json.load(open(path)) if os.path.exists(path) else None
+        record = None
+        if os.path.exists(path):
+            with open(path, "r", encoding="utf-8") as f:
+                record = json.load(f)
         return code, record, calls, err.getvalue()
 
     def test_record_identifies_what_was_asked_for_fetched_and_delivered(self):
