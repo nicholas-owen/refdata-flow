@@ -1,172 +1,144 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1960 1070" font-family="'Segoe UI',Helvetica,Arial,sans-serif">
-<rect width="1960" height="1070" fill="#fbfcfe"/>
-<text x="70.0" y="56.0" font-size="34" font-weight="800" text-anchor="start" fill="#1f4e79" font-family="'Segoe UI',Helvetica,Arial,sans-serif">
-<tspan x="70.0" dy="0">refdata-flow</tspan>
-</text>
-<text x="70.0" y="82.0" font-size="16" font-weight="500" text-anchor="start" fill="#868e96" font-family="'Segoe UI',Helvetica,Arial,sans-serif">
-<tspan x="70.0" dy="0">Reference-data provisioning pipeline — workflow map</tspan>
-</text>
-<text x="300.0" y="104.0" font-size="13" font-weight="700" text-anchor="middle" fill="#b4bbc6" font-family="'Segoe UI',Helvetica,Arial,sans-serif">
-<tspan x="300.0" dy="0">REQUEST  &amp;  RESOLVE</tspan>
-</text>
-<text x="845.0" y="104.0" font-size="13" font-weight="700" text-anchor="middle" fill="#b4bbc6" font-family="'Segoe UI',Helvetica,Arial,sans-serif">
-<tspan x="845.0" dy="0">PARALLEL  DOWNLOAD  ·  NEXTFLOW</tspan>
-</text>
-<text x="1370.0" y="104.0" font-size="13" font-weight="700" text-anchor="middle" fill="#b4bbc6" font-family="'Segoe UI',Helvetica,Arial,sans-serif">
-<tspan x="1370.0" dy="0">REFGENIE  INGEST  &amp;  HASHING</tspan>
-</text>
-<text x="1745.0" y="104.0" font-size="13" font-weight="700" text-anchor="middle" fill="#b4bbc6" font-family="'Segoe UI',Helvetica,Arial,sans-serif">
-<tspan x="1745.0" dy="0">VAULT  &amp;  HANDOFF</tspan>
-</text>
-<line x1="510" y1="116" x2="510" y2="1014" stroke="#eceef3" stroke-width="2"/>
-<line x1="1180" y1="116" x2="1180" y2="1014" stroke="#eceef3" stroke-width="2"/>
-<line x1="1560" y1="116" x2="1560" y2="1014" stroke="#eceef3" stroke-width="2"/>
-<path d="M 120.0 506.0 L 464.0 506.0 Q 480.0 506.0 491.3 494.7 L 674.7 311.3 Q 686.0 300.0 702.0 300.0 L 798.0 300.0 Q 814.0 300.0 825.3 311.3 L 1008.7 494.7 Q 1020.0 506.0 1036.0 506.0 L 1660.0 506.0" fill="none" stroke="#c2255c" stroke-width="9" stroke-linejoin="round" stroke-linecap="round"/>
-<path d="M 120.0 518.0 L 464.0 518.0 Q 480.0 518.0 491.3 506.7 L 650.7 347.3 Q 662.0 336.0 678.0 336.0 L 822.0 336.0 Q 838.0 336.0 849.3 347.3 L 1008.7 506.7 Q 1020.0 518.0 1036.0 518.0 L 1660.0 518.0" fill="none" stroke="#1c7ed6" stroke-width="9" stroke-linejoin="round" stroke-linecap="round"/>
-<path d="M 120.0 530.0 L 464.0 530.0 Q 480.0 530.0 491.3 541.3 L 642.7 692.7 Q 654.0 704.0 670.0 704.0 L 830.0 704.0 Q 846.0 704.0 857.3 692.7 L 1008.7 541.3 Q 1020.0 530.0 1036.0 530.0 L 1660.0 530.0" fill="none" stroke="#7048e8" stroke-width="9" stroke-linejoin="round" stroke-linecap="round"/>
-<path d="M 120.0 542.0 L 464.0 542.0 Q 480.0 542.0 491.3 553.3 L 666.7 728.7 Q 678.0 740.0 694.0 740.0 L 806.0 740.0 Q 822.0 740.0 833.3 728.7 L 1008.7 553.3 Q 1020.0 542.0 1036.0 542.0 L 1660.0 542.0" fill="none" stroke="#f08c00" stroke-width="9" stroke-linejoin="round" stroke-linecap="round"/>
-<path d="M 1090.0 491.0 L 1090.0 262.3 Q 1090.0 251.0 1098.0 243.0 L 1098.0 243.0 Q 1106.0 235.0 1117.3 235.0 L 1545.0 235.0" fill="none" stroke="#0ca678" stroke-width="9" stroke-linejoin="round" stroke-linecap="round"/>
-<path d="M 1675.0 524.0 L 1810.0 524.0" fill="none" stroke="#495057" stroke-width="8" stroke-linejoin="round" stroke-linecap="round"/>
-<path d="M 290 940 L 1290 940" fill="none" stroke="#495057" stroke-width="8" stroke-linejoin="round" stroke-linecap="round"/>
-<rect x="105" y="491" width="30" height="66" rx="15" fill="#ffffff" stroke="#212529" stroke-width="3.4"/>
-<text x="120.0" y="576.0" font-size="15" font-weight="600" text-anchor="middle" fill="#212529" font-family="'Segoe UI',Helvetica,Arial,sans-serif">
-<tspan x="120.0" dy="0">requests_raw.csv</tspan>
-<tspan x="120.0" dy="17">input requests</tspan>
-</text>
-<rect x="285" y="491" width="30" height="66" rx="15" fill="#ffffff" stroke="#212529" stroke-width="3.4"/>
-<text x="300.0" y="576.0" font-size="15" font-weight="600" text-anchor="middle" fill="#212529" font-family="'Segoe UI',Helvetica,Arial,sans-serif">
-<tspan x="300.0" dy="0">resolve.py</tspan>
-<tspan x="300.0" dy="17">search wizard</tspan>
-</text>
-<rect x="425" y="491" width="30" height="66" rx="15" fill="#ffffff" stroke="#212529" stroke-width="3.4"/>
-<text x="440.0" y="576.0" font-size="15" font-weight="600" text-anchor="middle" fill="#212529" font-family="'Segoe UI',Helvetica,Arial,sans-serif">
-<tspan x="440.0" dy="0">requests_resolved.csv</tspan>
-<tspan x="440.0" dy="17">cached ledger</tspan>
-</text>
-<circle cx="720" cy="300" r="9.5" fill="#ffffff" stroke="#c2255c" stroke-width="4.2"/>
-<text x="720.0" y="275.0" font-size="15" font-weight="600" text-anchor="middle" fill="#212529" font-family="'Segoe UI',Helvetica,Arial,sans-serif">
-<tspan x="720.0" dy="0">Ensembl</tspan>
-</text>
-<circle cx="720" cy="336" r="9.5" fill="#ffffff" stroke="#1c7ed6" stroke-width="4.2"/>
-<text x="720.0" y="374.0" font-size="15" font-weight="600" text-anchor="middle" fill="#212529" font-family="'Segoe UI',Helvetica,Arial,sans-serif">
-<tspan x="720.0" dy="0">UCSC</tspan>
-</text>
-<circle cx="720" cy="704" r="9.5" fill="#ffffff" stroke="#7048e8" stroke-width="4.2"/>
-<text x="720.0" y="679.0" font-size="15" font-weight="600" text-anchor="middle" fill="#212529" font-family="'Segoe UI',Helvetica,Arial,sans-serif">
-<tspan x="720.0" dy="0">NCBI · RefSeq</tspan>
-</text>
-<circle cx="720" cy="740" r="9.5" fill="#ffffff" stroke="#f08c00" stroke-width="4.2"/>
-<text x="720.0" y="778.0" font-size="15" font-weight="600" text-anchor="middle" fill="#212529" font-family="'Segoe UI',Helvetica,Arial,sans-serif">
-<tspan x="720.0" dy="0">GENCODE</tspan>
-</text>
-<rect x="1075" y="491" width="30" height="66" rx="15" fill="#ffffff" stroke="#212529" stroke-width="3.4"/>
-<text x="1090.0" y="576.0" font-size="15" font-weight="600" text-anchor="middle" fill="#212529" font-family="'Segoe UI',Helvetica,Arial,sans-serif">
-<tspan x="1090.0" dy="0">genomepy</tspan>
-<tspan x="1090.0" dy="17">install_genome</tspan>
-</text>
-<circle cx="1180" cy="235" r="9.5" fill="#ffffff" stroke="#0ca678" stroke-width="4.2"/>
-<text x="1180.0" y="211.0" font-size="15" font-weight="600" text-anchor="middle" fill="#212529" font-family="'Segoe UI',Helvetica,Arial,sans-serif">
-<tspan x="1180.0" dy="0">provenance.json</tspan>
-</text>
-<circle cx="1360" cy="235" r="9.5" fill="#ffffff" stroke="#0ca678" stroke-width="4.2"/>
-<text x="1360.0" y="211.0" font-size="15" font-weight="600" text-anchor="middle" fill="#212529" font-family="'Segoe UI',Helvetica,Arial,sans-serif">
-<tspan x="1360.0" dy="0">genomepy README</tspan>
-</text>
-<circle cx="1520" cy="235" r="9.5" fill="#ffffff" stroke="#0ca678" stroke-width="4.2"/>
-<text x="1520.0" y="211.0" font-size="15" font-weight="600" text-anchor="middle" fill="#212529" font-family="'Segoe UI',Helvetica,Arial,sans-serif">
-<tspan x="1520.0" dy="0">Refget digest</tspan>
-</text>
-<rect x="1275" y="491" width="30" height="66" rx="15" fill="#ffffff" stroke="#212529" stroke-width="3.4"/>
-<text x="1290.0" y="477.0" font-size="15" font-weight="600" text-anchor="middle" fill="#212529" font-family="'Segoe UI',Helvetica,Arial,sans-serif">
-<tspan x="1290.0" dy="0">refgenie build</tspan>
-</text>
-<rect x="1415" y="491" width="30" height="66" rx="15" fill="#ffffff" stroke="#212529" stroke-width="3.4"/>
-<text x="1430.0" y="576.0" font-size="15" font-weight="600" text-anchor="middle" fill="#212529" font-family="'Segoe UI',Helvetica,Arial,sans-serif">
-<tspan x="1430.0" dy="0">alias assignment</tspan>
-</text>
-<rect x="1505" y="501" width="30" height="46" rx="15" fill="#ffffff" stroke="#212529" stroke-width="3.4"/>
-<text x="1520.0" y="471.0" font-size="15" font-weight="600" text-anchor="middle" fill="#212529" font-family="'Segoe UI',Helvetica,Arial,sans-serif">
-<tspan x="1520.0" dy="0">cleanup</tspan>
-<tspan x="1520.0" dy="16">rmtree work/</tspan>
-</text>
-<rect x="1645" y="491" width="30" height="66" rx="15" fill="#ffffff" stroke="#212529" stroke-width="3.4"/>
-<text x="1660.0" y="576.0" font-size="15" font-weight="600" text-anchor="middle" fill="#212529" font-family="'Segoe UI',Helvetica,Arial,sans-serif">
-<tspan x="1660.0" dy="0">refgenie vault</tspan>
-<tspan x="1660.0" dy="17">genome_config.yaml</tspan>
-</text>
-<circle cx="1810" cy="524" r="9.5" fill="#ffffff" stroke="#495057" stroke-width="4.2"/>
-<text x="1810.0" y="489.0" font-size="15" font-weight="600" text-anchor="middle" fill="#212529" font-family="'Segoe UI',Helvetica,Arial,sans-serif">
-<tspan x="1810.0" dy="0">REFGENIE env →</tspan>
-<tspan x="1810.0" dy="16">rnaseq-flow &amp; nf-core</tspan>
-</text>
-<circle cx="340" cy="940" r="9.5" fill="#ffffff" stroke="#495057" stroke-width="4.2"/>
-<text x="340.0" y="918.0" font-size="14" font-weight="600" text-anchor="middle" fill="#212529" font-family="'Segoe UI',Helvetica,Arial,sans-serif">
-<tspan x="340.0" dy="0">venv setup</tspan>
-</text>
-<circle cx="640" cy="940" r="9.5" fill="#ffffff" stroke="#495057" stroke-width="4.2"/>
-<text x="640.0" y="918.0" font-size="14" font-weight="600" text-anchor="middle" fill="#212529" font-family="'Segoe UI',Helvetica,Arial,sans-serif">
-<tspan x="640.0" dy="0">--dry-run</tspan>
-</text>
-<circle cx="940" cy="940" r="9.5" fill="#ffffff" stroke="#495057" stroke-width="4.2"/>
-<text x="940.0" y="918.0" font-size="14" font-weight="600" text-anchor="middle" fill="#212529" font-family="'Segoe UI',Helvetica,Arial,sans-serif">
-<tspan x="940.0" dy="0">-resume</tspan>
-</text>
-<circle cx="1240" cy="940" r="9.5" fill="#ffffff" stroke="#495057" stroke-width="4.2"/>
-<text x="1240.0" y="918.0" font-size="14" font-weight="600" text-anchor="middle" fill="#212529" font-family="'Segoe UI',Helvetica,Arial,sans-serif">
-<tspan x="1240.0" dy="0">--clean</tspan>
-</text>
-<text x="1330.0" y="648.0" font-size="12.5" font-weight="500" text-anchor="middle" fill="#868e96" font-family="'Segoe UI',Helvetica,Arial,sans-serif">
-<tspan x="1330.0" dy="0">One provider is resolved per species. refgenie build computes a Refget digest, so the same sequence —</tspan>
-</text>
-<text x="1330.0" y="665.0" font-size="12.5" font-weight="500" text-anchor="middle" fill="#868e96" font-family="'Segoe UI',Helvetica,Arial,sans-serif">
-<tspan x="1330.0" dy="0">requested via any provider or human alias — deduplicates to a single physical file in the vault.</tspan>
-</text>
-<text x="290.0" y="995.0" font-size="13" font-weight="500" text-anchor="start" fill="#868e96" font-family="'Segoe UI',Helvetica,Arial,sans-serif">
-<tspan x="290.0" dy="0">Orchestration line — run_pipeline.sh chains resolve.py → Nextflow download → update_refgenie.</tspan>
-</text>
-<text x="290.0" y="1012.0" font-size="13" font-weight="500" text-anchor="start" fill="#868e96" font-family="'Segoe UI',Helvetica,Arial,sans-serif">
-<tspan x="290.0" dy="0">--dry-run stops after resolution · -resume skips completed downloads · --clean purges the work/ cache.</tspan>
-</text>
-<rect x="92" y="150" width="380" height="336" rx="14" fill="#ffffff" stroke="#dde2ea" stroke-width="2"/>
-<text x="114.0" y="184.0" font-size="18" font-weight="800" text-anchor="start" fill="#1f4e79" font-family="'Segoe UI',Helvetica,Arial,sans-serif">
-<tspan x="114.0" dy="0">Legend</tspan>
-</text>
-<line x1="116" y1="212" x2="162" y2="212" stroke="#c2255c" stroke-width="8" stroke-linecap="round"/>
-<text x="176.0" y="217.0" font-size="14" font-weight="500" text-anchor="start" fill="#212529" font-family="'Segoe UI',Helvetica,Arial,sans-serif">
-<tspan x="176.0" dy="0">Ensembl route — genome + annotation</tspan>
-</text>
-<line x1="116" y1="240" x2="162" y2="240" stroke="#1c7ed6" stroke-width="8" stroke-linecap="round"/>
-<text x="176.0" y="245.0" font-size="14" font-weight="500" text-anchor="start" fill="#212529" font-family="'Segoe UI',Helvetica,Arial,sans-serif">
-<tspan x="176.0" dy="0">UCSC route — genome assembly</tspan>
-</text>
-<line x1="116" y1="268" x2="162" y2="268" stroke="#7048e8" stroke-width="8" stroke-linecap="round"/>
-<text x="176.0" y="273.0" font-size="14" font-weight="500" text-anchor="start" fill="#212529" font-family="'Segoe UI',Helvetica,Arial,sans-serif">
-<tspan x="176.0" dy="0">NCBI · RefSeq route — genome assembly</tspan>
-</text>
-<line x1="116" y1="296" x2="162" y2="296" stroke="#f08c00" stroke-width="8" stroke-linecap="round"/>
-<text x="176.0" y="301.0" font-size="14" font-weight="500" text-anchor="start" fill="#212529" font-family="'Segoe UI',Helvetica,Arial,sans-serif">
-<tspan x="176.0" dy="0">GENCODE route — annotation (GTF)</tspan>
-</text>
-<line x1="116" y1="324" x2="162" y2="324" stroke="#0ca678" stroke-width="8" stroke-linecap="round"/>
-<text x="176.0" y="329.0" font-size="14" font-weight="500" text-anchor="start" fill="#212529" font-family="'Segoe UI',Helvetica,Arial,sans-serif">
-<tspan x="176.0" dy="0">Provenance &amp; audit branch</tspan>
-</text>
-<line x1="116" y1="352" x2="162" y2="352" stroke="#495057" stroke-width="8" stroke-linecap="round"/>
-<text x="176.0" y="357.0" font-size="14" font-weight="500" text-anchor="start" fill="#212529" font-family="'Segoe UI',Helvetica,Arial,sans-serif">
-<tspan x="176.0" dy="0">run_pipeline.sh orchestration line</tspan>
-</text>
-<rect x="126" y="379" width="26" height="26" rx="13" fill="#ffffff" stroke="#212529" stroke-width="3.2"/>
-<text x="176.0" y="397.0" font-size="14" font-weight="500" text-anchor="start" fill="#212529" font-family="'Segoe UI',Helvetica,Arial,sans-serif">
-<tspan x="176.0" dy="0">Interchange — shared by all providers</tspan>
-</text>
-<circle cx="139" cy="422" r="9.5" fill="#ffffff" stroke="#868e96" stroke-width="4.2"/>
-<text x="176.0" y="427.0" font-size="14" font-weight="500" text-anchor="start" fill="#212529" font-family="'Segoe UI',Helvetica,Arial,sans-serif">
-<tspan x="176.0" dy="0">Stop — single provider / source</tspan>
-</text>
-<text x="114.0" y="452.0" font-size="12" font-weight="500" text-anchor="start" fill="#868e96" font-family="'Segoe UI',Helvetica,Arial,sans-serif">
-<tspan x="114.0" dy="0">One provider resolved per species. Resolution runs on a</tspan>
-</text>
-<text x="114.0" y="467.0" font-size="12" font-weight="500" text-anchor="start" fill="#868e96" font-family="'Segoe UI',Helvetica,Arial,sans-serif">
-<tspan x="114.0" dy="0">login node; download and ingest run as batch jobs.</tspan>
-</text>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 2240 1210" font-family="'Segoe UI',Helvetica,Arial,sans-serif">
+<rect width="2240" height="1210" fill="#fbfcfe"/>
+<text x="70" y="56" font-size="34" font-weight="800" text-anchor="start" fill="#1f4e79"><tspan x="70" dy="0">refdata-flow</tspan></text>
+<text x="70" y="82" font-size="16" font-weight="500" text-anchor="start" fill="#868e96"><tspan x="70" dy="0">Reference-data provisioning pipeline — workflow map, November 2026</tspan></text>
+<text x="275.0" y="116" font-size="13" font-weight="700" text-anchor="middle" fill="#b4bbc6"><tspan x="275.0" dy="0">REQUEST  &amp;  RESOLVE</tspan></text>
+<text x="815.0" y="116" font-size="13" font-weight="700" text-anchor="middle" fill="#b4bbc6"><tspan x="815.0" dy="0">FETCH  ·  NEXTFLOW</tspan></text>
+<text x="1510.0" y="116" font-size="13" font-weight="700" text-anchor="middle" fill="#b4bbc6"><tspan x="1510.0" dy="0">REGISTER  ·  DERIVE  ·  CHECK</tspan></text>
+<text x="2040.0" y="116" font-size="13" font-weight="700" text-anchor="middle" fill="#b4bbc6"><tspan x="2040.0" dy="0">VAULT  &amp;  HANDOFF</tspan></text>
+<line x1="490" y1="128" x2="490" y2="1040" stroke="#eceef3" stroke-width="2"/>
+<line x1="1140" y1="128" x2="1140" y2="1040" stroke="#eceef3" stroke-width="2"/>
+<line x1="1880" y1="128" x2="1880" y2="1040" stroke="#eceef3" stroke-width="2"/>
+<path d="M 110 576 L 579.0 576.0 Q 595 576 606.3 564.7 L 779.7 391.3 Q 791 380 807.0 380.0 L 853.0 380.0 Q 869 380 880.3 391.3 L 1053.7 564.7 Q 1065 576 1081.0 576.0 L 1950 576" fill="none" stroke="#c2255c" stroke-width="9" stroke-linejoin="round" stroke-linecap="round"/>
+<path d="M 110 588 L 579.0 588.0 Q 595 588 606.3 576.7 L 751.7 431.3 Q 763 420 779.0 420.0 L 881.0 420.0 Q 897 420 908.3 431.3 L 1053.7 576.7 Q 1065 588 1081.0 588.0 L 1950 588" fill="none" stroke="#1c7ed6" stroke-width="9" stroke-linejoin="round" stroke-linecap="round"/>
+<path d="M 110 600 L 579.0 600.0 Q 595 600 606.3 611.3 L 743.7 748.7 Q 755 760 771.0 760.0 L 889.0 760.0 Q 905 760 916.3 748.7 L 1053.7 611.3 Q 1065 600 1081.0 600.0 L 1950 600" fill="none" stroke="#7048e8" stroke-width="9" stroke-linejoin="round" stroke-linecap="round"/>
+<path d="M 110 612 L 579.0 612.0 Q 595 612 606.3 623.3 L 771.7 788.7 Q 783 800 799.0 800.0 L 861.0 800.0 Q 877 800 888.3 788.7 L 1053.7 623.3 Q 1065 612 1081.0 612.0 L 1950 612" fill="none" stroke="#f08c00" stroke-width="9" stroke-linejoin="round" stroke-linecap="round"/>
+<path d="M 110 624 L 579.0 624.0 Q 595 624 606.3 635.3 L 799.7 828.7 Q 811 840 827.0 840.0 L 833.0 840.0 Q 849 840 860.3 828.7 L 1053.7 635.3 Q 1065 624 1081.0 624.0 L 1950 624" fill="none" stroke="#1098ad" stroke-width="9" stroke-linejoin="round" stroke-linecap="round"/>
+<path d="M 1200 564 L 1244.0 564.0 Q 1260 564 1271.3 552.7 L 1338.7 485.3 Q 1350 474 1366.0 474.0 L 1624.0 474.0 Q 1640 474 1651.3 485.3 L 1718.7 552.7 Q 1730 564 1746.0 564.0 L 1950 564" fill="none" stroke="#66a80f" stroke-width="9" stroke-linejoin="round" stroke-linecap="round"/>
+<path d="M 1200 636 L 1244.0 636.0 Q 1260 636 1271.3 647.3 L 1372.7 748.7 Q 1384 760 1400.0 760.0 L 1590.0 760.0 Q 1606 760 1617.3 748.7 L 1718.7 647.3 Q 1730 636 1746.0 636.0 L 1950 636" fill="none" stroke="#e03131" stroke-width="9" stroke-linejoin="round" stroke-linecap="round"/>
+<path d="M 1095 561 L 1095.0 266.0 Q 1095 250 1111.0 250.0 L 1934.0 250.0 Q 1950 250 1950.0 266.0 L 1950 549" fill="none" stroke="#0ca678" stroke-width="9" stroke-linejoin="round" stroke-linecap="round"/>
+<path d="M 110 975 L 1950 975" fill="none" stroke="#a5673f" stroke-width="9" stroke-linejoin="round" stroke-linecap="round"/>
+<path d="M 1950 600 L 2110 600" fill="none" stroke="#495057" stroke-width="8" stroke-linejoin="round" stroke-linecap="round"/>
+<path d="M 280 1095 L 1690 1095" fill="none" stroke="#495057" stroke-width="8" stroke-linejoin="round" stroke-linecap="round"/>
+<rect x="95" y="561" width="30" height="78" rx="15" fill="#ffffff" stroke="#212529" stroke-width="3.4"/>
+<text x="110" y="664" font-size="15" font-weight="600" text-anchor="middle" fill="#212529"><tspan x="110" dy="0">requests_raw.csv</tspan></text>
+<text x="110" y="681" font-size="13" font-weight="500" text-anchor="middle" fill="#868e96"><tspan x="110" dy="0">genomes · resources</tspan></text>
+<rect x="255" y="561" width="30" height="78" rx="15" fill="#ffffff" stroke="#212529" stroke-width="3.4"/>
+<text x="270" y="664" font-size="15" font-weight="600" text-anchor="middle" fill="#212529"><tspan x="270" dy="0">resolve.py</tspan></text>
+<text x="270" y="681" font-size="13" font-weight="500" text-anchor="middle" fill="#868e96"><tspan x="270" dy="0">search · checks</tspan></text>
+<rect x="410" y="561" width="30" height="78" rx="15" fill="#ffffff" stroke="#212529" stroke-width="3.4"/>
+<text x="425" y="664" font-size="15" font-weight="600" text-anchor="middle" fill="#212529"><tspan x="425" dy="0">requests_resolved.csv</tspan></text>
+<text x="425" y="681" font-size="13" font-weight="500" text-anchor="middle" fill="#868e96"><tspan x="425" dy="0">cached per query</tspan></text>
+<rect x="545" y="561" width="30" height="78" rx="15" fill="#ffffff" stroke="#212529" stroke-width="3.4"/>
+<text x="560" y="664" font-size="15" font-weight="600" text-anchor="middle" fill="#212529"><tspan x="560" dy="0">preflight</tspan></text>
+<text x="560" y="681" font-size="13" font-weight="500" text-anchor="middle" fill="#868e96"><tspan x="560" dy="0">asks the vault first</tspan></text>
+<rect x="1080" y="561" width="30" height="78" rx="15" fill="#ffffff" stroke="#212529" stroke-width="3.4"/>
+<text x="1095" y="664" font-size="15" font-weight="600" text-anchor="middle" fill="#212529"><tspan x="1095" dy="0">genomepy</tspan></text>
+<text x="1095" y="681" font-size="13" font-weight="500" text-anchor="middle" fill="#868e96"><tspan x="1095" dy="0">FETCH_GENOME</tspan></text>
+<circle cx="830" cy="380" r="9.5" fill="#ffffff" stroke="#c2255c" stroke-width="4.2"/>
+<text x="830" y="365" font-size="15" font-weight="600" text-anchor="middle" fill="#212529"><tspan x="830" dy="0">Ensembl</tspan></text>
+<circle cx="830" cy="420" r="9.5" fill="#ffffff" stroke="#1c7ed6" stroke-width="4.2"/>
+<text x="830" y="405" font-size="15" font-weight="600" text-anchor="middle" fill="#212529"><tspan x="830" dy="0">UCSC</tspan></text>
+<circle cx="830" cy="760" r="9.5" fill="#ffffff" stroke="#7048e8" stroke-width="4.2"/>
+<text x="830" y="745" font-size="15" font-weight="600" text-anchor="middle" fill="#212529"><tspan x="830" dy="0">NCBI · RefSeq</tspan></text>
+<circle cx="830" cy="800" r="9.5" fill="#ffffff" stroke="#f08c00" stroke-width="4.2"/>
+<text x="830" y="785" font-size="15" font-weight="600" text-anchor="middle" fill="#212529"><tspan x="830" dy="0">GENCODE</tspan></text>
+<circle cx="830" cy="840" r="9.5" fill="#ffffff" stroke="#1098ad" stroke-width="4.2"/>
+<text x="830" y="868" font-size="15" font-weight="600" text-anchor="middle" fill="#212529"><tspan x="830" dy="0">By address</tspan></text>
+<text x="830" y="588" font-size="12.5" font-weight="500" text-anchor="middle" fill="#868e96"><tspan x="830" dy="0">one download per row,</tspan><tspan x="830" dy="16">four at a time,</tspan><tspan x="830" dy="16">a failure retried twice</tspan></text>
+<rect x="1185" y="549" width="30" height="102" rx="15" fill="#ffffff" stroke="#212529" stroke-width="3.4"/>
+<text x="1200" y="512" font-size="15" font-weight="600" text-anchor="middle" fill="#212529"><tspan x="1200" dy="0">REGISTER</tspan></text>
+<text x="1200" y="529" font-size="13" font-weight="500" text-anchor="middle" fill="#868e96"><tspan x="1200" dy="0">build · digest · aliases</tspan></text>
+<rect x="1745" y="549" width="30" height="102" rx="15" fill="#ffffff" stroke="#212529" stroke-width="3.4"/>
+<text x="1760" y="692" font-size="15" font-weight="600" text-anchor="middle" fill="#212529"><tspan x="1760" dy="0">REGISTER_ASSET</tspan></text>
+<text x="1760" y="709" font-size="13" font-weight="500" text-anchor="middle" fill="#868e96"><tspan x="1760" dy="0">linked under every alias</tspan></text>
+<rect x="1935" y="549" width="30" height="102" rx="15" fill="#ffffff" stroke="#212529" stroke-width="3.4"/>
+<text x="1950" y="676" font-size="15" font-weight="600" text-anchor="middle" fill="#212529"><tspan x="1950" dy="0">refgenie vault</tspan></text>
+<text x="1950" y="693" font-size="13" font-weight="500" text-anchor="middle" fill="#868e96"><tspan x="1950" dy="0">refgenie_export.yaml</tspan><tspan x="1950" dy="15">data/&lt;digest&gt;/ · alias/</tspan></text>
+<circle cx="2110" cy="600" r="9.5" fill="#ffffff" stroke="#495057" stroke-width="4.2"/>
+<text x="2110" y="560" font-size="15" font-weight="600" text-anchor="middle" fill="#212529"><tspan x="2110" dy="0">refgenie seek →</tspan></text>
+<text x="2110" y="577" font-size="13" font-weight="500" text-anchor="middle" fill="#868e96"><tspan x="2110" dy="0">rnaseq-flow · GATK · VEP</tspan></text>
+<circle cx="1400" cy="474" r="9.5" fill="#ffffff" stroke="#66a80f" stroke-width="4.2"/>
+<text x="1400" y="437" font-size="15" font-weight="600" text-anchor="middle" fill="#212529"><tspan x="1400" dy="0">transcriptome</tspan></text>
+<text x="1400" y="454" font-size="13" font-weight="500" text-anchor="middle" fill="#868e96"><tspan x="1400" dy="0">gffread, per release</tspan></text>
+<circle cx="1500" cy="474" r="9.5" fill="#ffffff" stroke="#66a80f" stroke-width="4.2"/>
+<text x="1500" y="503" font-size="15" font-weight="600" text-anchor="middle" fill="#212529"><tspan x="1500" dy="0">tx2gene · indexed GTF</tspan></text>
+<text x="1500" y="520" font-size="13" font-weight="500" text-anchor="middle" fill="#868e96"><tspan x="1500" dy="0">BED12 · refFlat</tspan></text>
+<circle cx="1600" cy="474" r="9.5" fill="#ffffff" stroke="#66a80f" stroke-width="4.2"/>
+<text x="1600" y="437" font-size="15" font-weight="600" text-anchor="middle" fill="#212529"><tspan x="1600" dy="0">2bit</tspan></text>
+<text x="1600" y="454" font-size="13" font-weight="500" text-anchor="middle" fill="#868e96"><tspan x="1600" dy="0">read back and checked</tspan></text>
+<text x="1495" y="404" font-size="12.5" font-weight="500" text-anchor="middle" fill="#868e96"><tspan x="1495" dy="0">derived from the vault's own files: nothing downloaded</tspan></text>
+<circle cx="1420" cy="760" r="9.5" fill="#ffffff" stroke="#e03131" stroke-width="4.2"/>
+<text x="1420" y="789" font-size="15" font-weight="600" text-anchor="middle" fill="#212529"><tspan x="1420" dy="0">fetch if new</tspan></text>
+<text x="1420" y="806" font-size="13" font-weight="500" text-anchor="middle" fill="#868e96"><tspan x="1420" dy="0">version · room · checksum</tspan></text>
+<circle cx="1580" cy="760" r="9.5" fill="#ffffff" stroke="#e03131" stroke-width="4.2"/>
+<text x="1580" y="789" font-size="15" font-weight="600" text-anchor="middle" fill="#212529"><tspan x="1580" dy="0">rename · check</tspan></text>
+<text x="1580" y="806" font-size="13" font-weight="500" text-anchor="middle" fill="#868e96"><tspan x="1580" dy="0">against the genome</tspan></text>
+<text x="1495" y="840" font-size="13" font-weight="600" text-anchor="middle" fill="#e03131"><tspan x="1495" dy="0">ClinVar · ENCODE blacklist · GATK bundle · dbSNP · VEP cache</tspan></text>
+<circle cx="1260" cy="250" r="9.5" fill="#ffffff" stroke="#0ca678" stroke-width="4.2"/>
+<text x="1260" y="216" font-size="15" font-weight="600" text-anchor="middle" fill="#212529"><tspan x="1260" dy="0">provenance.json</tspan></text>
+<text x="1260" y="233" font-size="13" font-weight="500" text-anchor="middle" fill="#868e96"><tspan x="1260" dy="0">what was fetched, from where</tspan></text>
+<circle cx="1450" cy="250" r="9.5" fill="#ffffff" stroke="#0ca678" stroke-width="4.2"/>
+<text x="1450" y="216" font-size="15" font-weight="600" text-anchor="middle" fill="#212529"><tspan x="1450" dy="0">assembly_report</tspan></text>
+<text x="1450" y="233" font-size="13" font-weight="500" text-anchor="middle" fill="#868e96"><tspan x="1450" dy="0">every name of every sequence</tspan></text>
+<circle cx="1640" cy="250" r="9.5" fill="#ffffff" stroke="#0ca678" stroke-width="4.2"/>
+<text x="1640" y="216" font-size="15" font-weight="600" text-anchor="middle" fill="#212529"><tspan x="1640" dy="0">provenance/index.tsv</tspan></text>
+<text x="1640" y="233" font-size="13" font-weight="500" text-anchor="middle" fill="#868e96"><tspan x="1640" dy="0">the vault as a table</tspan></text>
+<circle cx="1820" cy="250" r="9.5" fill="#ffffff" stroke="#0ca678" stroke-width="4.2"/>
+<text x="1820" y="216" font-size="15" font-weight="600" text-anchor="middle" fill="#212529"><tspan x="1820" dy="0">ro-crate-metadata.json</tspan></text>
+<text x="1820" y="233" font-size="13" font-weight="500" text-anchor="middle" fill="#868e96"><tspan x="1820" dy="0">the vault as an RO-Crate</tspan></text>
+<rect x="95" y="958" width="30" height="34" rx="15" fill="#ffffff" stroke="#212529" stroke-width="3.4"/>
+<text x="110" y="1016" font-size="15" font-weight="600" text-anchor="middle" fill="#212529"><tspan x="110" dy="0">databases.csv</tspan></text>
+<circle cx="830" cy="975" r="9.5" fill="#ffffff" stroke="#a5673f" stroke-width="4.2"/>
+<text x="830" y="1004" font-size="15" font-weight="600" text-anchor="middle" fill="#212529"><tspan x="830" dy="0">fetch if new</tspan></text>
+<text x="830" y="1021" font-size="13" font-weight="500" text-anchor="middle" fill="#868e96"><tspan x="830" dy="0">Swiss-Prot · Pfam · SILVA · Kraken 2</tspan></text>
+<circle cx="1500" cy="975" r="9.5" fill="#ffffff" stroke="#a5673f" stroke-width="4.2"/>
+<text x="1500" y="1004" font-size="15" font-weight="600" text-anchor="middle" fill="#212529"><tspan x="1500" dy="0">file beside the vault</tspan></text>
+<text x="1500" y="1021" font-size="13" font-weight="500" text-anchor="middle" fill="#868e96"><tspan x="1500" dy="0">after every registration</tspan></text>
+<rect x="1935" y="958" width="30" height="34" rx="15" fill="#ffffff" stroke="#212529" stroke-width="3.4"/>
+<text x="1950" y="941" font-size="15" font-weight="600" text-anchor="middle" fill="#212529"><tspan x="1950" dy="0">databases/&lt;name&gt;/&lt;version&gt;/</tspan></text>
+<text x="1950" y="1016" font-size="13" font-weight="500" text-anchor="middle" fill="#868e96"><tspan x="1950" dy="0">databases.tsv</tspan></text>
+<circle cx="330" cy="1095" r="9.5" fill="#ffffff" stroke="#495057" stroke-width="4.2"/>
+<text x="330" y="1073" font-size="14" font-weight="600" text-anchor="middle" fill="#212529"><tspan x="330" dy="0">venv setup</tspan></text>
+<circle cx="600" cy="1095" r="9.5" fill="#ffffff" stroke="#495057" stroke-width="4.2"/>
+<text x="600" y="1073" font-size="14" font-weight="600" text-anchor="middle" fill="#212529"><tspan x="600" dy="0">--dry-run</tspan></text>
+<circle cx="870" cy="1095" r="9.5" fill="#ffffff" stroke="#495057" stroke-width="4.2"/>
+<text x="870" y="1073" font-size="14" font-weight="600" text-anchor="middle" fill="#212529"><tspan x="870" dy="0">preflight · -resume</tspan></text>
+<circle cx="1140" cy="1095" r="9.5" fill="#ffffff" stroke="#495057" stroke-width="4.2"/>
+<text x="1140" y="1073" font-size="14" font-weight="600" text-anchor="middle" fill="#212529"><tspan x="1140" dy="0">--cleanup (opt-in)</tspan></text>
+<circle cx="1410" cy="1095" r="9.5" fill="#ffffff" stroke="#495057" stroke-width="4.2"/>
+<text x="1410" y="1073" font-size="14" font-weight="600" text-anchor="middle" fill="#212529"><tspan x="1410" dy="0">--profile sge</tspan></text>
+<circle cx="1680" cy="1095" r="9.5" fill="#ffffff" stroke="#495057" stroke-width="4.2"/>
+<text x="1680" y="1073" font-size="14" font-weight="600" text-anchor="middle" fill="#212529"><tspan x="1680" dy="0">--clean</tspan></text>
+<text x="280" y="1140" font-size="13" font-weight="500" text-anchor="start" fill="#868e96"><tspan x="280" dy="0">Orchestration line — run_pipeline.sh resolves the requests, then fetches, registers, derives and checks in one Nextflow run.</tspan></text>
+<text x="280" y="1158" font-size="13" font-weight="500" text-anchor="start" fill="#868e96"><tspan x="280" dy="0">--dry-run stops after resolution · the preflight skips what the vault already holds · --cleanup removes downloads once verified · --profile sge submits the derivations only · --clean empties work/.</tspan></text>
+<text x="2045" y="760" font-size="12.5" font-weight="500" text-anchor="middle" fill="#868e96"><tspan x="2045" dy="0">One copy per set of sequences:</tspan><tspan x="2045" dy="17">the vault is keyed by refgenie's</tspan><tspan x="2045" dy="17">sequence-collection digest, and</tspan><tspan x="2045" dy="17">every alias links straight to it.</tspan></text>
+<text x="1495" y="885" font-size="12.5" font-weight="500" text-anchor="middle" fill="#868e96"><tspan x="1495" dy="0">Nothing joins the vault unchecked: a resource must fit its genome's</tspan><tspan x="1495" dy="17">sequence names and lengths, and a download the size and checksum</tspan><tspan x="1495" dy="17">its publisher announces.</tspan></text>
+<rect x="80" y="146" width="392" height="398" rx="14" fill="#ffffff" stroke="#dde2ea" stroke-width="2"/>
+<text x="102" y="178" font-size="18" font-weight="800" text-anchor="start" fill="#1f4e79"><tspan x="102" dy="0">Legend</tspan></text>
+<line x1="104" y1="204" x2="150" y2="204" stroke="#c2255c" stroke-width="8" stroke-linecap="round"/>
+<text x="164" y="209" font-size="14" font-weight="500" text-anchor="start" fill="#212529"><tspan x="164" dy="0">Ensembl — genome + annotation</tspan></text>
+<line x1="104" y1="229" x2="150" y2="229" stroke="#1c7ed6" stroke-width="8" stroke-linecap="round"/>
+<text x="164" y="234" font-size="14" font-weight="500" text-anchor="start" fill="#212529"><tspan x="164" dy="0">UCSC — genome + annotation</tspan></text>
+<line x1="104" y1="254" x2="150" y2="254" stroke="#7048e8" stroke-width="8" stroke-linecap="round"/>
+<text x="164" y="259" font-size="14" font-weight="500" text-anchor="start" fill="#212529"><tspan x="164" dy="0">NCBI · RefSeq — genome + annotation</tspan></text>
+<line x1="104" y1="279" x2="150" y2="279" stroke="#f08c00" stroke-width="8" stroke-linecap="round"/>
+<text x="164" y="284" font-size="14" font-weight="500" text-anchor="start" fill="#212529"><tspan x="164" dy="0">GENCODE — genome + annotation</tspan></text>
+<line x1="104" y1="304" x2="150" y2="304" stroke="#1098ad" stroke-width="8" stroke-linecap="round"/>
+<text x="164" y="309" font-size="14" font-weight="500" text-anchor="start" fill="#212529"><tspan x="164" dy="0">By address — a genome file you name</tspan></text>
+<line x1="104" y1="329" x2="150" y2="329" stroke="#66a80f" stroke-width="8" stroke-linecap="round"/>
+<text x="164" y="334" font-size="14" font-weight="500" text-anchor="start" fill="#212529"><tspan x="164" dy="0">Derived assets — cut from the vault</tspan></text>
+<line x1="104" y1="354" x2="150" y2="354" stroke="#e03131" stroke-width="8" stroke-linecap="round"/>
+<text x="164" y="359" font-size="14" font-weight="500" text-anchor="start" fill="#212529"><tspan x="164" dy="0">Resources — checked against a genome</tspan></text>
+<line x1="104" y1="379" x2="150" y2="379" stroke="#a5673f" stroke-width="8" stroke-linecap="round"/>
+<text x="164" y="384" font-size="14" font-weight="500" text-anchor="start" fill="#212529"><tspan x="164" dy="0">Databases — no genome, filed beside</tspan></text>
+<line x1="104" y1="404" x2="150" y2="404" stroke="#0ca678" stroke-width="8" stroke-linecap="round"/>
+<text x="164" y="409" font-size="14" font-weight="500" text-anchor="start" fill="#212529"><tspan x="164" dy="0">Provenance &amp; audit branch</tspan></text>
+<line x1="104" y1="429" x2="150" y2="429" stroke="#495057" stroke-width="8" stroke-linecap="round"/>
+<text x="164" y="434" font-size="14" font-weight="500" text-anchor="start" fill="#212529"><tspan x="164" dy="0">run_pipeline.sh orchestration line</tspan></text>
+<rect x="114" y="442" width="26" height="26" rx="13" fill="#ffffff" stroke="#212529" stroke-width="3.2"/>
+<text x="164" y="459" font-size="14" font-weight="500" text-anchor="start" fill="#212529"><tspan x="164" dy="0">Interchange — a step several lines share</tspan></text>
+<circle cx="127" cy="481" r="9.5" fill="#ffffff" stroke="#868e96" stroke-width="4.2"/>
+<text x="164" y="486" font-size="14" font-weight="500" text-anchor="start" fill="#212529"><tspan x="164" dy="0">Stop — one source, file or check</tspan></text>
+<text x="102" y="511" font-size="12" font-weight="500" text-anchor="start" fill="#868e96"><tspan x="102" dy="0">Downloads and registration run where you launch;</tspan><tspan x="102" dy="15">with --profile sge the derivations are jobs.</tspan></text>
 </svg>

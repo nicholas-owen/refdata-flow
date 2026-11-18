@@ -1,0 +1,19 @@
+{
+  "name": "url_gtf",
+  "description": "GTF annotation for a genome requested by address (provider 'url'), fetched from the address given in the request and stored as genomepy delivered it. Named for how it was obtained, because nothing else is known about it: no provider stands behind the file, so the vault does not claim one. Where it came from is in the genome's provenance record (`refgenie seek <genome>/provenance`), under annotation_url. A passthrough - no derived TSS or gene-body BEDs, since those transformations assume one provider's contig naming and attribute order.",
+  "required_files": [
+    {
+      "key": "url_gtf",
+      "description": "Annotation file in Gene Transfer Format (GTF), fetched by address"
+    }
+  ],
+  "required_assets": [],
+  "required_parameters": [],
+  "container": "databio/refgenie",
+  "assets": {
+    "url_gtf": "{genome}.gtf.gz"
+  },
+  "command_list": [
+    "cp {url_gtf} {asset_outfolder}/{genome}.gtf.gz"
+  ]
+}

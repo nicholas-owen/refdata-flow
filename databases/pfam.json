@@ -1,0 +1,16 @@
+{
+  "name": "pfam",
+  "description": "Pfam-A: profile hidden Markov models of protein families, as the one file HMMER's hmmpress and hmmscan take. Replaced in place at each release.",
+  "terms": "https://www.ebi.ac.uk/interpro/about/pfam/",
+  "url": "https://ftp.ebi.ac.uk/pub/databases/Pfam/current_release/Pfam-A.hmm.gz",
+  "version": {
+    "url": "https://ftp.ebi.ac.uk/pub/databases/Pfam/current_release/Pfam.version.gz",
+    "pattern": "Pfam release\\s*:\\s*(\\S+)"
+  },
+  "checksum": {
+    "type": "md5",
+    "url": "https://ftp.ebi.ac.uk/pub/databases/Pfam/current_release/md5_checksums"
+  },
+  "unpack": null,
+  "size": "about 660 MB"
+}

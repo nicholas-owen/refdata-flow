@@ -1,0 +1,41 @@
+{
+  "name": "fasta_txome",
+  "description": "Transcript sequences DERIVED from this vault's own genome and annotation with `gffread -w`, with a samtools index, a sizes file and a record of the derivation. Never a provider's cDNA download: Ensembl's cDNA set omits non-coding genes and is cut from the toplevel assembly, not the primary assembly the vault holds, so a downloaded transcriptome can contain transcripts from contigs the genome does not have. Deriving gives exactly the transcripts in the annotation, ncRNA included, from exactly the sequence in the vault, for every provider. The tag is the annotation release the transcripts came from, and both inputs are recorded as parents: `genome_fasta` (the fasta asset) and `annotation` (the provider's GTF asset at that release). Sequence is written in upper case: the vault's genomes are soft-masked, and lower-case repeats inside transcripts mean nothing to a quantifier while differing from every provider's own cDNA. No transcripts are filtered by biotype; that is an analysis choice, not a property of a reference. The first four commands are refgenie's stock fasta_txome recipe.",
+  "required_files": [
+    {
+      "key": "transcripts",
+      "description": "gzipped transcript FASTA written by the DERIVE_TXOME process"
+    },
+    {
+      "key": "provenance",
+      "description": "JSON record of how the transcripts were derived"
+    }
+  ],
+  "required_assets": [
+    {
+      "key": "genome_fasta",
+      "default": "fasta",
+      "description": "the genome the transcripts were cut from"
+    },
+    {
+      "key": "annotation",
+      "default": "ensembl_gtf",
+      "description": "the annotation asset and release that define the transcripts; always given explicitly, since its name depends on the provider"
+    }
+  ],
+  "required_parameters": [],
+  "container": "databio/refgenie",
+  "assets": {
+    "fasta_txome": "{genome}.fa",
+    "fai": "{genome}.fa.fai",
+    "chrom_sizes": "{genome}.chrom.sizes",
+    "provenance": "{genome}.provenance.json"
+  },
+  "command_list": [
+    "cp {transcripts} {asset_outfolder}/{genome}.fa.gz",
+    "gzip -df {asset_outfolder}/{genome}.fa.gz",
+    "samtools faidx {asset_outfolder}/{genome}.fa",
+    "cut -f 1,2 {asset_outfolder}/{genome}.fa.fai > {asset_outfolder}/{genome}.chrom.sizes",
+    "cp {provenance} {asset_outfolder}/{genome}.provenance.json"
+  ]
+}

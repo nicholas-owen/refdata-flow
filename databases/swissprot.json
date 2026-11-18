@@ -1,0 +1,12 @@
+{
+  "name": "swissprot",
+  "description": "UniProtKB/Swiss-Prot: the manually reviewed protein sequences of UniProt, as one FASTA file. Replaced in place about every eight weeks.",
+  "terms": "https://www.uniprot.org/help/license",
+  "url": "https://ftp.uniprot.org/pub/databases/uniprot/current_release/knowledgebase/complete/uniprot_sprot.fasta.gz",
+  "version": {
+    "url": "https://ftp.uniprot.org/pub/databases/uniprot/current_release/knowledgebase/complete/reldate.txt",
+    "pattern": "Swiss-Prot Release (\\S+)"
+  },
+  "unpack": null,
+  "size": "about 90 MB"
+}

@@ -1,0 +1,31 @@
+{
+  "name": "tx2gene",
+  "description": "Which gene each transcript belongs to: three tab-separated columns, transcript_id, gene_id, gene_name, with no header line, one line per transcript in the order the GTF first names it. DERIVED from the vault's own annotation by bin/derive_annotation.sh, so its transcript names are exactly those in the fasta_txome asset of the same tag, which is what tximport and Salmon's gene-level summary need. Where a gene has no name the third column repeats the gene_id rather than being left empty. The tag is the annotation release, and the annotation asset is recorded as the parent.",
+  "required_files": [
+    {
+      "key": "tx2gene",
+      "description": "the three-column table written by the DERIVE_ANNOTATION process"
+    },
+    {
+      "key": "provenance",
+      "description": "JSON record of how it was derived"
+    }
+  ],
+  "required_assets": [
+    {
+      "key": "annotation",
+      "default": "ensembl_gtf",
+      "description": "the annotation asset and release this was derived from; always given explicitly, since its name depends on the provider"
+    }
+  ],
+  "required_parameters": [],
+  "container": "databio/refgenie",
+  "assets": {
+    "tx2gene": "{genome}.tx2gene.tsv",
+    "provenance": "{genome}.provenance.json"
+  },
+  "command_list": [
+    "cp {tx2gene} {asset_outfolder}/{genome}.tx2gene.tsv",
+    "cp {provenance} {asset_outfolder}/{genome}.provenance.json"
+  ]
+}

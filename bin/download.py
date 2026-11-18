@@ -2,12 +2,16 @@
 # Copyright (C) 2026 Nicholas Owen
 # SPDX-License-Identifier: GPL-3.0-or-later
 import argparse
+import gzip
+import hashlib
+import platform
+import subprocess
 import sys
 import json
 import os
 import re
 import shutil
-from datetime import datetime
+from datetime import datetime, timezone
 import genomepy
 
 # UCSC command-line tools that genomepy shells out to when converting gene
@@ -188,8 +192,22 @@ def derive_annotation_release(assembly_dir, provider, tag):
     match = README_ANNOTATION_RE.search(text)
     if not match:
         return None, None
-    source = match.group(1).strip()
+    return release_from_source(match.group(1).strip(), provider, tag)
 
+
+def release_from_source(source, provider, tag):
+    """
+    The release an annotation source denotes, as (value, kind), or (None, None).
+
+    `source` is what genomepy records as the 'annotation url': a download URL, or
+    for UCSC "UCSC MySQL database: <db>, table: <table>".
+
+    Split out from derive_annotation_release() so the same rules can be applied
+    BEFORE a download, to a source genomepy has only been asked about.
+    bin/preflight.py does that to decide whether the vault already holds the
+    release a provider is currently publishing. One implementation, so the tag the
+    preflight looks for is by construction the tag the ingest will have written.
+    """
     name = str(provider).strip().lower()
 
     if name == "ensembl":
@@ -224,6 +242,229 @@ def safe_tag(value):
     return cleaned or None
 
 
+# --- what was downloaded: the provenance record -------------------------------
+#
+# provenance.json used to hold the four request fields, a timestamp and the word
+# "genomepy". It could say that a download happened, not what was downloaded: no
+# source URL, no checksum, no tool version, nothing about which variant of the
+# assembly. Everything below fills that in from three places - the arguments this
+# script passed, the README.txt genomepy wrote, and the files themselves.
+#
+# None of it may fail a download. It runs after gigabytes have been fetched
+# correctly, and a record that is missing a field is better than a genome thrown
+# away for want of one. Each part is collected separately, and a part that fails
+# is named under "provenance_errors" so its absence is not mistaken for nothing
+# to report.
+
+# Bumped when the record's shape changes, so a reader can tell an old record from
+# an incomplete one. 1 was the request fields only (and was not written down).
+PROVENANCE_SCHEMA = 2
+
+GENE_ID_RE = re.compile(rb'gene_id "([^"]+)"')
+TRANSCRIPT_ID_RE = re.compile(rb'transcript_id "([^"]+)"')
+BIOTYPE_RE = re.compile(rb'gene_(?:bio)?type "([^"]+)"')
+
+
+def sha256_of_file(path):
+    """SHA-256 of a file's bytes as stored, and its size."""
+    digest, size = hashlib.sha256(), 0
+    with open(path, "rb") as fh:
+        for chunk in iter(lambda: fh.read(1 << 20), b""):
+            digest.update(chunk)
+            size += len(chunk)
+    return digest.hexdigest(), size
+
+
+def describe_fasta(path, sizes_path=None):
+    """
+    Identify a delivered FASTA two ways, because the two answer different questions.
+
+    file_sha256     the .fa.gz exactly as downloaded and bgzip-compressed here. It
+                    changes if the file is recompressed, so it identifies this
+                    copy and nothing more.
+    content_sha256  the sequence text inside it. Stable under recompression, and
+                    the one that can be checked against the vault: refgenie stores
+                    the FASTA decompressed, so `sha256sum` of the vault's .fa must
+                    give this value.
+
+    Neither is the vault's genome digest, which is computed from sequence names,
+    lengths and content and is refgenie's own.
+    """
+    file_sha256, file_bytes = sha256_of_file(path)
+    content, content_bytes = hashlib.sha256(), 0
+    with gzip.open(path, "rb") as fh:
+        for chunk in iter(lambda: fh.read(1 << 20), b""):
+            content.update(chunk)
+            content_bytes += len(chunk)
+    record = {
+        "file": os.path.basename(path),
+        "file_sha256": file_sha256,
+        "file_bytes": file_bytes,
+        "content_sha256": content.hexdigest(),
+        "content_bytes": content_bytes,
+    }
+    if sizes_path and os.path.exists(sizes_path):
+        with open(sizes_path) as fh:
+            lengths = [int(line.split("\t")[1]) for line in fh if line.strip()]
+        record["sequences"] = len(lengths)
+        record["total_length"] = sum(lengths)
+    return record
+
+
+def describe_gtf(path):
+    """
+    Identify and summarise a delivered GTF in one pass over its decompressed text.
+
+    The hashes are as for describe_fasta. Read them with one caveat that the FASTA
+    does not have: this is the GTF genomepy DELIVERED, not the file the provider
+    published. genomepy drops the header lines and rewrites contig names to match
+    the genome, and for UCSC there is no upstream file at all - the GTF is
+    generated here from database tables. So content_sha256 identifies what is in
+    the vault and can be compared between two vaults; it cannot be checked against
+    Ensembl's CHECKSUMS or GENCODE's MD5SUMS.
+
+    That is why the summary is recorded beside it. Two annotations that differ
+    will have different hashes and nothing more to say; the counts say how they
+    differ, which is what someone comparing them needs.
+    """
+    file_sha256, file_bytes = sha256_of_file(path)
+    content, content_bytes, lines = hashlib.sha256(), 0, 0
+    features, contigs, biotypes = {}, set(), set()
+    genes, transcripts, headers = set(), set(), []
+
+    with gzip.open(path, "rb") as fh:
+        for line in fh:
+            content.update(line)
+            content_bytes += len(line)
+            if line.startswith(b"#"):
+                if line.startswith(b"#!"):
+                    headers.append(line.decode("utf-8", "replace").strip())
+                continue
+            fields = line.split(b"\t", 8)
+            if len(fields) < 9:
+                continue
+            lines += 1
+            contigs.add(fields[0])
+            features[fields[2]] = features.get(fields[2], 0) + 1
+            attributes = fields[8]
+            found = GENE_ID_RE.search(attributes)
+            if found:
+                genes.add(found.group(1))
+            found = TRANSCRIPT_ID_RE.search(attributes)
+            if found:
+                transcripts.add(found.group(1))
+            found = BIOTYPE_RE.search(attributes)
+            if found:
+                biotypes.add(found.group(1))
+
+    return {
+        "file": os.path.basename(path),
+        "file_sha256": file_sha256,
+        "file_bytes": file_bytes,
+        "content_sha256": content.hexdigest(),
+        "content_bytes": content_bytes,
+        "records": lines,
+        "feature_counts": {k.decode(): v for k, v in sorted(features.items())},
+        "genes": len(genes),
+        "transcripts": len(transcripts),
+        "contigs": sorted(c.decode() for c in contigs),
+        "biotypes": sorted(b.decode() for b in biotypes),
+        # Ensembl and GENCODE state provider and release in '#!' lines. genomepy
+        # 0.16.4 strips them, so this is normally empty; kept in case that changes.
+        "header_lines": headers,
+    }
+
+
+def parse_genomepy_readme(path):
+    """
+    genomepy's README.txt as a dict, plus its free text.
+
+    genomepy already records where everything came from - the source URLs, the
+    assembly accession, the taxon, the masking, and what it changed - but as text
+    nobody can query. 'key: value' lines become fields with the spaces in their
+    keys turned to underscores; anything else (for instance "No contigs were
+    removed.") is kept under 'notes'.
+    """
+    fields, notes = {}, []
+    with open(path) as fh:
+        for raw in fh:
+            line = raw.strip()
+            if not line:
+                continue
+            key, separator, value = line.partition(": ")
+            if separator and re.fullmatch(r"[A-Za-z][A-Za-z _]*", key):
+                fields[key.strip().lower().replace(" ", "_")] = value.strip()
+            else:
+                notes.append(line)
+    if notes:
+        fields["notes"] = notes
+    return fields
+
+
+def tool_versions():
+    """
+    Versions of what shaped the delivered files.
+
+    bgzip and samtools are asked directly because they are whichever ones are on
+    PATH in this task, not a property of this script. The UCSC converters that
+    build an annotation from UCSC's tables have no version flag to ask.
+    """
+    versions = {
+        "python": platform.python_version(),
+        "genomepy": getattr(genomepy, "__version__", "unknown"),
+    }
+    for tool in ("bgzip", "samtools"):
+        try:
+            out = subprocess.run([tool, "--version"], capture_output=True, text=True,
+                                 timeout=30).stdout.splitlines()
+            if out:
+                versions[tool] = out[0].strip()
+        except (OSError, subprocess.SubprocessError):
+            pass
+    return versions
+
+
+def describe_download(assembly_dir, assembly, annotation, tag):
+    """
+    Everything the record says about the files, as (fields, errors).
+
+    Each part is attempted on its own; see the note at the top of this section.
+    """
+    fields, errors = {}, []
+
+    def attempt(name, build):
+        try:
+            build()
+        except Exception as e:
+            errors.append(f"{name}: {e}")
+            print(f"{tag}       WARNING: could not record {name} in provenance.json: {e}",
+                  file=sys.stderr, flush=True)
+
+    def readme():
+        parsed = parse_genomepy_readme(os.path.join(assembly_dir, "README.txt"))
+        fields["genomepy_readme"] = parsed
+        # Hoisted, because these are what a reader looks for first.
+        for key in ("assembly_accession", "tax_id", "genome_url", "annotation_url"):
+            if parsed.get(key):
+                fields[key] = parsed[key]
+
+    def genome():
+        fields["genome"] = describe_fasta(
+            os.path.join(assembly_dir, f"{assembly}.fa.gz"),
+            os.path.join(assembly_dir, f"{assembly}.fa.sizes"))
+
+    def gtf():
+        fields["annotation"] = describe_gtf(
+            os.path.join(assembly_dir, f"{assembly}.annotation.gtf.gz"))
+
+    attempt("genomepy's README.txt", readme)
+    attempt("the genome's checksums", genome)
+    if annotation:
+        attempt("the annotation's checksums and summary", gtf)
+    attempt("tool versions", lambda: fields.__setitem__("tool_versions", tool_versions()))
+    return fields, errors
+
+
 def main():
     parser = argparse.ArgumentParser(description="Wrapper for genomepy for Nextflow pipeline.")
     parser.add_argument("--species", required=True, help="Species name (e.g., Homo_sapiens)")
@@ -232,6 +473,12 @@ def main():
     parser.add_argument("--annotation", action="store_true", help="Download annotation")
     parser.add_argument("--release", default=None,
                         help="Provider release to pin (Ensembl only)")
+    parser.add_argument("--pipeline-version", default="",
+                        help="refdata-flow version, recorded in provenance.json")
+    parser.add_argument("--url", default="",
+                        help="Address of the genome FASTA (provider 'url' only)")
+    parser.add_argument("--annotation-url", default="",
+                        help="Address of the annotation (provider 'url' only)")
 
     args = parser.parse_args()
 
@@ -256,13 +503,56 @@ def main():
     print(f"{tag} [1/3] Starting: {args.species} {args.assembly} "
           f"from {args.provider} - fetching {artefacts}", flush=True)
 
+    # The arguments that decide WHICH variant of the assembly is delivered, and so
+    # what the vault's digest will be. They are genomepy's defaults, passed
+    # explicitly: the record below is then a copy of what was asked for, not a
+    # belief about what a default was in the genomepy version that happened to run.
+    #
+    #   mask          soft-masked sequence where the provider offers it
+    #   keep_alt      False: alternative haplotypes and patches are filtered out
+    #   invert_match  no regex is given, so nothing else is filtered
+    install_arguments = {
+        "mask": "soft",
+        "keep_alt": False,
+        "invert_match": False,
+        "bgzip": True,
+    }
     kwargs = {
         "name": args.assembly,
         "provider": args.provider,
         "genomes_dir": local_dir,
         "annotation": args.annotation,
-        "bgzip": True
+        **install_arguments,
     }
+
+    # A genome requested by address. genomepy's 'url' provider takes the address
+    # where every other provider takes a name, and the name the genome is to be
+    # known by as `localname`; the directory and files it writes are then called
+    # after that name, exactly as for a named assembly, so nothing downstream
+    # needs to know the difference. With no provider to ask, an annotation must be
+    # given by address too: left to itself genomepy goes looking in the genome's
+    # directory for a file with a similar name, which is a guess.
+    is_url = args.provider.strip().lower() == "url"
+    if is_url:
+        if not args.url:
+            print(f"{tag} Refusing to run: provider 'url' needs --url.",
+                  file=sys.stderr, flush=True)
+            sys.exit(1)
+        if args.annotation and not args.annotation_url:
+            print(f"{tag} Refusing to run: annotation was requested for a genome given "
+                  "by address, and no --annotation-url says where it is.",
+                  file=sys.stderr, flush=True)
+            sys.exit(1)
+        kwargs["name"] = args.url
+        kwargs["localname"] = args.assembly
+        if args.annotation:
+            kwargs["to_annotation"] = args.annotation_url
+        print(f"{tag}       Taking the genome from {args.url}", flush=True)
+    elif args.url or args.annotation_url:
+        print(f"{tag} Refusing to run: --url and --annotation-url are only for provider "
+              f"'url', not '{args.provider}'. The address would be ignored and the "
+              "provider's own file downloaded in its place.", file=sys.stderr, flush=True)
+        sys.exit(1)
 
     # Only Ensembl reads `version` out of install_genome's **kwargs; the other
     # providers accept it and discard it without complaint. bin/resolve.py already
@@ -291,13 +581,30 @@ def main():
 
         # Provenance tracking: capture metadata of the download session
         provenance = {
-            "timestamp": datetime.now().isoformat(),
+            "schema": PROVENANCE_SCHEMA,
+            # UTC, and said to be. This was naive local time, which on a vault
+            # shared between machines could not be placed. For UCSC it is also
+            # the nearest thing to a version the sequence has.
+            "retrieved_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "pipeline_version": args.pipeline_version,
             "species": args.species,
             "assembly": args.assembly,
             "provider": args.provider,
             "annotation_requested": args.annotation,
-            "tool": "genomepy"
+            # The release the request pinned, empty when it took the current one.
+            # With assembly and provider this identifies which request a download
+            # directory answers; bin/update_refgenie.py checks all three before
+            # ingesting a directory it was handed by position.
+            "release_requested": release,
+            "tool": "genomepy",
+            "install_arguments": install_arguments,
         }
+        # For a genome requested by address, the address IS the request. Recorded
+        # as asked for, separately from the 'genome_url' genomepy reports, so the
+        # preflight can tell when a name in the vault came from somewhere else.
+        if is_url:
+            provenance["url_requested"] = args.url
+            provenance["annotation_url_requested"] = args.annotation_url if args.annotation else ""
 
         # Identify which annotation release this actually is, so the ingest stage
         # can tag the asset with it. Recorded here rather than at ingest because
@@ -320,8 +627,16 @@ def main():
                       "'default' and two releases could later collide under it.",
                       file=sys.stderr, flush=True)
 
-        # Write the provenance.json into the created assembly directory
-        print(f"{tag} [3/3] Writing provenance.json", flush=True)
+        # What the files are: checksums, a summary of the annotation, genomepy's
+        # own record, tool versions. A full read of both files, so for a large
+        # genome this is a minute or two; it cannot fail the download.
+        print(f"{tag} [3/3] Checksumming and writing provenance.json", flush=True)
+        described, errors = describe_download(args.assembly, args.assembly,
+                                              args.annotation, tag)
+        provenance.update(described)
+        if errors:
+            provenance["provenance_errors"] = errors
+
         prov_path = os.path.join(args.assembly, "provenance.json")
         with open(prov_path, "w") as f:
             json.dump(provenance, f, indent=4)

@@ -32,8 +32,18 @@ DRY_RUN=0
 DEBUG=0
 CLEANUP=0
 NONINTERACTIVE=0
+REFETCH=0
+TXOME=1
+DERIVED=1
+# Databases that belong to no genome are asked for in a list of their own. It is
+# optional: with no --databases and no file at the default place, none are fetched.
+DATABASES=""
+DEFAULT_DATABASES="requests/databases.csv"
+# Nextflow profiles. conda is always on - it supplies the tools - and --profile
+# adds to it, e.g. `--profile sge` runs with `-profile conda,sge`.
+PROFILES="conda"
 
-USAGE="Usage: bash run_pipeline.sh [requests.csv] [--outdir /path/to/save] [--cleanup] [--non-interactive] [--clean] [--dry-run] [--debug] [--version]"
+USAGE="Usage: bash run_pipeline.sh [requests.csv] [--outdir /path/to/save] [--databases databases.csv] [--no-txome] [--no-derived] [--profile sge] [--cleanup] [--refetch] [--non-interactive] [--clean] [--dry-run] [--debug] [--version]"
 
 # Parse command line arguments
 while [[ "$#" -gt 0 ]]; do
@@ -63,6 +73,46 @@ while [[ "$#" -gt 0 ]]; do
             # into the refgenie vault. Opt-in: upstream providers archive old releases,
             # so a deleted download is not guaranteed to be re-fetchable.
             CLEANUP=1
+            ;;
+        --refetch)
+            # Download every request again, including genomes the vault already
+            # holds. By default the vault is asked first and only what it lacks is
+            # fetched; this is for the case where a copy in the vault is suspect.
+            REFETCH=1
+            ;;
+        --databases)
+            # A CSV file with a `database` column: the genome-less databases to
+            # hold under <outdir>/databases/ (Swiss-Prot, Pfam, a Kraken2 index).
+            # Taken before the *.csv case below, which is the genome request file.
+            if [ -z "${2:-}" ] || [ ! -f "$2" ]; then
+                echo "Error: --databases needs the path of an existing file, e.g. --databases requests/databases.csv"
+                exit 1
+            fi
+            DATABASES="$2"
+            shift
+            ;;
+        --no-txome)
+            # Skip the transcriptome. Every run otherwise derives one for each
+            # requested genome that has an annotation, from the vault's own FASTA
+            # and GTF (the fasta_txome asset). There is no --txome flag to turn it
+            # on, because it is on.
+            TXOME=0
+            ;;
+        --no-derived)
+            # Skip the small derived assets: tx2gene, the sorted and indexed GTF,
+            # BED12 and refFlat for each annotation, and a .2bit for each genome.
+            # Like the transcriptome they are otherwise part of every run.
+            DERIVED=0
+            ;;
+        --profile)
+            # An extra Nextflow profile, added to conda. Checked against a plain
+            # allowlist: the value ends up on a command line.
+            if [[ ! "${2:-}" =~ ^[A-Za-z0-9_,]+$ ]]; then
+                echo "Error: --profile needs a profile name, e.g. --profile sge"
+                exit 1
+            fi
+            PROFILES="conda,$2"
+            shift
             ;;
         --clean)
             echo "Cleaning up Nextflow cache, logs, and work directories..."
@@ -258,10 +308,19 @@ BGZIP_EOF
 
 chmod +x "$VENV_DIR/bin/samtools" "$VENV_DIR/bin/bgzip"
 
-# Put the venv bin on PATH so refgenie's `samtools faidx` subprocess (and any
-# genomepy `bgzip` call) resolves to the shims above.
+# The absolute path of the venv's bin, handed to Nextflow as --venv_bin so the
+# REGISTER process can put it on its own PATH: that is where refgenie and the
+# shims above are.
+#
+# It is deliberately NOT exported onto PATH here, as it used to be. Everything this
+# script runs from the venv is called by its full path, and an export reaches the
+# download tasks too. There it shadowed the conda environment they are given:
+# with conda's (base) active in the launching shell, `conda activate` puts the
+# task's environment where base was, not at the front, so `.venv/bin` stayed ahead
+# of it. Seen on a real run - download.py ran under the venv's Python, and each
+# FASTA was compressed by the pysam stand-in for bgzip rather than the real one,
+# with the conda environment supplying only the UCSC tools.
 VENV_BIN="$(cd "$VENV_DIR/bin" && pwd)"
-export PATH="$VENV_BIN:$PATH"
 
 if [ ! -f "$RAW_CSV" ]; then
     # First run: seed the request file from the tracked template, then stop. Copying
@@ -336,7 +395,12 @@ if [ "$DRY_RUN" -eq 1 ]; then
 fi
 
 echo ""
-echo "[Step 2] Launching Nextflow pipeline..."
+echo "[Step 2] Launching Nextflow pipeline (download, then catalogue in refgenie)..."
+# Nextflow now runs both remaining stages. Cataloguing used to be a third step
+# here, run after Nextflow returned; it is the REGISTER process in main.nf, which
+# starts once every download has finished and reads each one as a task input
+# rather than from the copy published under --outdir.
+#
 # Assemble Nextflow arguments. --debug streams each task's progress messages to
 # the console (process `debug`); -ansi-log false makes that streamed output
 # readable instead of being repainted over by the single-line status display.
@@ -344,22 +408,54 @@ echo "[Step 2] Launching Nextflow pipeline..."
 # wrapper and the config each held their own copy of this path, agreeing only by
 # coincidence; passing it here makes the wrapper authoritative and leaves the config
 # default for a bare `nextflow run main.nf`.
-NF_ARGS="-profile conda --input $RESOLVED_CSV --outdir $OUTDIR -resume"
-if [ "$DEBUG" -eq 1 ]; then
-    echo "[Step 2] Debug mode: streaming per-task download progress."
-    NF_ARGS="$NF_ARGS --debug true -ansi-log false"
-fi
-# The -resume flag ensures we don't redownload existing datasets
-nextflow run main.nf $NF_ARGS
-
-echo ""
-echo "[Step 3] Building Refgenie Configuration..."
-REFGENIE_ARGS=("$RAW_CSV" "$RESOLVED_CSV" "$OUTDIR")
+#
+# --venv_bin tells REGISTER which Python environment holds refgenie: the one this
+# script built above, by absolute path, so it does not depend on where Nextflow
+# thinks the project directory is.
+#
+# An array, not a string: a string is split on spaces when expanded, so an
+# --outdir with a space in it became two arguments.
+NF_ARGS=(-profile "$PROFILES" --input "$RESOLVED_CSV" --outdir "$OUTDIR" --venv_bin "$VENV_BIN" -resume)
 if [ "$CLEANUP" -eq 1 ]; then
-    echo "[Step 3] --cleanup: verified source directories will be removed after ingest."
-    REFGENIE_ARGS+=(--cleanup)
+    # Sources are not kept under --outdir, and copies an earlier run left there
+    # are removed once each genome is verified into the vault.
+    echo "[Step 2] --cleanup: downloaded sources will not be kept once they are in the vault."
+    NF_ARGS+=(--cleanup true)
 fi
-"$VENV_DIR/bin/python" bin/update_refgenie.py "${REFGENIE_ARGS[@]}"
+if [ "$REFETCH" -eq 1 ]; then
+    echo "[Step 2] --refetch: every request will be downloaded, whatever the vault holds."
+    NF_ARGS+=(--preflight false)
+fi
+# Said explicitly in both directions, so the wrapper decides and a changed default
+# in nextflow.config cannot quietly alter what this script does.
+if [ "$TXOME" -eq 1 ]; then
+    NF_ARGS+=(--txome true)
+else
+    echo "[Step 2] --no-txome: no transcriptomes will be derived."
+    NF_ARGS+=(--txome false)
+fi
+if [ "$DERIVED" -eq 1 ]; then
+    NF_ARGS+=(--derived true)
+else
+    echo "[Step 2] --no-derived: no tx2gene, indexed GTF, BED12, refFlat or .2bit will be derived."
+    NF_ARGS+=(--derived false)
+fi
+if [ -z "$DATABASES" ] && [ -f "$DEFAULT_DATABASES" ]; then
+    DATABASES="$DEFAULT_DATABASES"
+fi
+if [ -n "$DATABASES" ]; then
+    echo "[Step 2] Databases listed in $DATABASES will be held under $OUTDIR/databases."
+    NF_ARGS+=(--databases "$DATABASES")
+fi
+if [ "$DEBUG" -eq 1 ]; then
+    echo "[Step 2] Debug mode: streaming per-task progress."
+    NF_ARGS+=(--debug true -ansi-log false)
+fi
+# What keeps a finished genome from being downloaded again is the preflight, which
+# asks the vault. -resume is a second, weaker line: it covers a download that
+# completed but was not yet registered when a run stopped, for as long as work/
+# still exists.
+nextflow run main.nf "${NF_ARGS[@]}"
 
 echo ""
 ELAPSED_TIME=$(($SECONDS - $START_TIME))
@@ -374,6 +470,10 @@ if [ "$CLEANUP" -eq 0 ]; then
     echo ""
     echo "  Downloaded sources were retained under $OUTDIR/<provider>/<species>/."
     echo "  Re-run with --cleanup to remove them once you are satisfied with the vault."
+else
+    echo ""
+    echo "  Downloaded sources were not kept under $OUTDIR. Nextflow's own copies are"
+    echo "  still in work/ until you run: bash run_pipeline.sh --clean"
 fi
 echo "=========================================="
 # end of run_pipeline.sh

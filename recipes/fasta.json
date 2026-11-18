@@ -1,0 +1,26 @@
+{
+  "name": "fasta",
+  "description": "DNA sequences in the FASTA format, with a samtools index, a chromosome sizes file and a sequence dictionary. This is refgenie's stock fasta recipe with one command added: `samtools dict`, giving the asset a fourth seek key, `dict`. The dictionary is part of this asset, not an asset of its own, because GATK and Picard do not take its path as an argument: given `-R genome.fa` they look for `genome.dict` in the same directory. refgenie's alias tree links each file of an asset under the alias name, so building the dictionary here is what puts `<alias>.dict` beside `<alias>.fa` and `<alias>.fa.fai`. A separate asset would sit in a different directory and be catalogued but unusable without linking the files together by hand. The first four commands and their outputs are unchanged from the stock recipe. The dictionary is a function of the sequence alone: no assembly or species tag is written, and UR names the FASTA file beside it instead of an absolute path, so the same sequence always yields the same dictionary wherever the vault is.",
+  "required_files": [
+    {
+      "key": "fasta",
+      "description": "gzipped fasta file"
+    }
+  ],
+  "required_assets": [],
+  "required_parameters": [],
+  "container": "databio/refgenie",
+  "assets": {
+    "fasta": "{genome}.fa",
+    "fai": "{genome}.fa.fai",
+    "chrom_sizes": "{genome}.chrom.sizes",
+    "dict": "{genome}.dict"
+  },
+  "command_list": [
+    "cp {fasta} {asset_outfolder}/{genome}.fa.gz",
+    "gzip -df {asset_outfolder}/{genome}.fa.gz",
+    "samtools faidx {asset_outfolder}/{genome}.fa",
+    "cut -f 1,2 {asset_outfolder}/{genome}.fa.fai > {asset_outfolder}/{genome}.chrom.sizes",
+    "samtools dict -u {genome}.fa -o {asset_outfolder}/{genome}.dict {asset_outfolder}/{genome}.fa"
+  ]
+}

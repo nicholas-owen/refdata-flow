@@ -4,19 +4,40 @@
 import argparse
 import csv
 import os
+import re
 import sys
 import tempfile
 from collections import namedtuple
 
 import genomepy
-from genomepy.providers import list_providers
+from genomepy.providers import PROVIDERS, list_providers
+
+import resource_registry
+# genomepy logs through loguru's single global logger. Importing it here gives
+# this script the same object, to restyle its output and to listen to it.
+from loguru import logger as genomepy_logger
 
 # The resolved CSV carries `query` so the cache can tell *which request* produced
 # a given assembly. Without it the cache could only be keyed on species, which
 # meant an edited query (e.g. GRCh38 -> GRCh37) silently returned the previously
 # resolved assembly. Downstream consumers (main.nf, update_refgenie.py) read by
 # column name, so the extra column is additive and harmless to them.
-RESOLVED_FIELDNAMES = ["species", "assembly", "provider", "annotation", "query", "release"]
+#
+# `aliases` is carried through for the same reason, one step further on. The ingest
+# used to join each resolved row back to the request CSV on (species, query) to find
+# its aliases, which cannot tell apart two rows asking for the same assembly from two
+# providers - Mus_musculus/GRCm39 from Ensembl and from GENCODE share that key, so
+# both rows were handed the last row's aliases and the first genome ended up
+# carrying the second's. A resolved row that carries its own aliases needs no join.
+#
+# `url` and `annotation_url` are filled only for a genome requested by address
+# (provider 'url'), where they are the request: there is no provider to ask.
+#
+# `resources` lists the third-party datasets wanted alongside the genome, as
+# name:build pairs (`clinvar:GRCh38;blacklist:hg38`), checked here against the
+# registry in resources/ so that a mistyped name fails before anything is fetched.
+RESOLVED_FIELDNAMES = ["species", "assembly", "provider", "annotation", "query",
+                       "release", "aliases", "url", "annotation_url", "resources"]
 
 # Which providers can actually be pinned to a release.
 #
@@ -206,9 +227,84 @@ def validate_release(provider_name, release, assembly):
         )
 
 
-def search_assemblies(query):
-    """Run a genomepy search and return typed, shape-checked results."""
-    rows = list(genomepy.search(query, size=False))
+# ---------------------------------------------------------------------------
+# genomepy's log output
+# ---------------------------------------------------------------------------
+
+# genomepy's own format, which colours the level name blue whatever the level:
+#   <green>{time}</green> | <blue>{level}</blue> | {message}
+# So "Ensembl appears to be offline" - the one line in a long search that changes
+# what the user should do next - looked exactly like the progress lines around it.
+# INFO keeps genomepy's styling; WARNING and above are red, level and message both.
+_LOG_PREFIX = "<green>{time:HH:mm:ss}</green> <bold>|</bold> "
+_LOG_INFO = _LOG_PREFIX + "<blue>{level}</blue> <bold>|</bold> {message}\n{exception}"
+_LOG_WARNING = (_LOG_PREFIX + "<red><bold>{level}</bold></red> <bold>|</bold> "
+                "<red>{message}</red>\n{exception}")
+
+# Providers genomepy reported as offline during the search now running. See
+# search_assemblies() for why this is recorded rather than checked afterwards.
+_OFFLINE_RE = re.compile(r"^(.+?) appears to be offline")
+_offline_during_search = set()
+
+
+def _log_format(record):
+    return _LOG_WARNING if record["level"].no >= 30 else _LOG_INFO
+
+
+def _note_offline(message):
+    """loguru sink: remember which providers genomepy says it could not reach."""
+    found = _OFFLINE_RE.match(message.record["message"])
+    if found:
+        for name in found.group(1).split(","):
+            _offline_during_search.add(name.strip().lower())
+
+
+def configure_genomepy_logging(stream=None, colorize=None):
+    """
+    Replace genomepy's log handler with one that makes warnings stand out, and add
+    a second that listens for providers going offline.
+
+    `colorize=None` leaves the decision to loguru, which colours a terminal and
+    writes plain text to a file or a pipe - so a log captured by a scheduler holds
+    no escape codes.
+    """
+    genomepy_logger.remove()
+    genomepy_logger.add(stream or sys.stderr, format=_log_format, level="INFO",
+                        colorize=colorize)
+    genomepy_logger.add(_note_offline, level="WARNING", format="{message}")
+
+
+def search_assemblies(query, provider=None):
+    """
+    Run a genomepy search. Returns (typed, shape-checked results, offline providers).
+
+    With `provider`, only that provider is searched. The resolver used to search
+    all of them for every row and discard the rest, so a request naming Ensembl
+    waited several minutes on NCBI's assembly summaries, and an outage at a
+    provider nobody had asked for still appeared in the output.
+
+    The second value is the set of providers genomepy could not reach WHILE this
+    search ran, taken from its own warnings. Asking afterwards is not the same
+    question. A search across all providers takes minutes - NCBI alone is several -
+    and a provider that was down at the start can be back by the end. Seen for
+    real: Ensembl was offline when the search reached it, so it contributed no
+    rows; five minutes later a ping succeeded, and the run reported "no matches
+    found for 'GRCh38' with provider 'ensembl'", sending the user to look for a
+    typo in a request that was correct.
+    """
+    _offline_during_search.clear()
+    try:
+        rows = list(genomepy.search(query, provider=provider or None, size=False))
+    except ConnectionError:
+        # genomepy warns and carries on while at least one provider answers, and
+        # raises only when none does - which, with one provider named, is whenever
+        # that provider is down. Either way it is an outage to report against the
+        # row, not a reason to abandon every other row in the request.
+        rows = []
+        _offline_during_search.update(
+            [provider.lower()] if provider else [name.lower() for name in list_providers()]
+        )
+    offline = set(_offline_during_search)
     if rows:
         _verify_row_shape(rows[0])
     results = []
@@ -222,7 +318,7 @@ def search_assemblies(query):
             species=r[5] if len(r) > 5 else None,
             other=r[6] if len(r) > 6 else None,
         ))
-    return results
+    return results, offline
 
 
 # ---------------------------------------------------------------------------
@@ -332,9 +428,16 @@ def load_cache(output_file):
     Load previous resolutions so an unchanged request can skip the slow network
     search and the interactive prompt.
 
-    Keyed on (species, query) rather than species alone: a species may legitimately
-    be needed at more than one assembly, and an edited query must not be answered
-    from a stale entry.
+    Keyed on (species, query, release) rather than species alone: a species may
+    legitimately be needed at more than one assembly, an edited query must not be
+    answered from a stale entry, and two releases of one assembly are two requests.
+    Release was previously compared after the lookup instead of being part of the
+    key, so two rows differing only in release shared one slot and evicted each
+    other on every run.
+
+    Each key holds a LIST, because the key still does not identify a request on its
+    own: the same query against two providers (GRCm39 from Ensembl and from GENCODE)
+    is two rows with one key. cached_resolution() picks between them by provider.
 
     A resolved CSV written before the `query` column existed yields an empty query
     for every row, so its entries simply fail to match and are re-resolved. That is
@@ -349,8 +452,9 @@ def load_cache(output_file):
             for row in reader:
                 species = (row.get("species") or "").strip()
                 query = (row.get("query") or "").strip()
+                release = (row.get("release") or "").strip()
                 if species:
-                    cache[(species, query)] = row
+                    cache.setdefault((species, query, release), []).append(row)
     except Exception as e:
         # Previously this was `except Exception: pass`, which made a corrupt cache
         # indistinguishable from an absent one. Re-resolving everything is still the
@@ -362,6 +466,148 @@ def load_cache(output_file):
         )
         return {}
     return cache
+
+
+def cached_resolution(cache, species, query, release, provider_filter):
+    """
+    The one cached row that answers this request, or None to re-resolve.
+
+    With a provider named in the request, only a cached row from that provider
+    counts: a filter added or changed since the cached run must not be ignored, as
+    the cached assembly may come from a provider the user has now ruled out.
+
+    Anything other than exactly one candidate is a miss. Two candidates means the
+    cache cannot say which was meant, and guessing is how a request ends up with
+    another row's genome; re-resolving costs one search.
+    """
+    rows = cache.get((species, query, release), [])
+    if provider_filter:
+        rows = [r for r in rows
+                if (r.get("provider") or "").strip().lower() == provider_filter]
+    return rows[0] if len(rows) == 1 else None
+
+
+# ---------------------------------------------------------------------------
+# Request consistency
+# ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# Genomes requested by address (provider 'url')
+# ---------------------------------------------------------------------------
+#
+# Some reference genomes cannot be found by searching a provider, because no
+# provider's catalogue lists them: NCBI's GRCh38 "analysis sets", the Broad's
+# Homo_sapiens_assembly38.fasta that the GATK resource bundle is built against, a
+# consortium's own release. They are published as a file at an address. A row with
+# provider 'url' names that address in the `url` column and is taken as it stands:
+# nothing is searched and nothing is chosen.
+#
+# With no provider to supply one, the genome's name is the row's `query`, and an
+# annotation has to be given by address too.
+URL_PROVIDER = "url"
+
+# The name becomes a directory, a refgenie genome name and part of shell commands.
+NAME_RE = re.compile(r"^[A-Za-z0-9._-]+$")
+
+# Deliberately narrower than what a URL may legally contain. The address is handed
+# to a shell command by the workflow, so the characters a shell acts on inside
+# double quotes ($, `, ", \) are excluded, and with them ? and &: no reference
+# file surveyed needs a query string, and a rule that is simple to state is one
+# that is simple to check.
+URL_RE = re.compile(r"^(https?|ftp)://[A-Za-z0-9._~/%+=:@,-]+$")
+ANNOTATION_URL_RE = re.compile(r"\.(gtf|gff3?|bed)(\.gz)?$", re.IGNORECASE)
+URL_RULE = ("an http, https or ftp address using only letters, digits and the "
+            "characters . _ ~ / % + = : @ , -")
+
+
+def url_request_problem(query, url, annotation_url, annotation):
+    """Why a provider-'url' row cannot be used as written, or None."""
+    if not url:
+        return ("provider 'url' takes the genome from an address, and the url column "
+                "is empty")
+    if not URL_RE.match(url):
+        return f"url '{url}' cannot be used: it must be {URL_RULE}"
+    if not NAME_RE.match(query):
+        return (f"with provider 'url' the query is the name the genome will be known "
+                f"by, and '{query}' has characters other than letters, digits, '.', "
+                "'_' and '-'")
+    if wants_annotation(annotation):
+        if not annotation_url:
+            return ("annotation was requested, but an address has no provider to "
+                    "supply one: give the annotation's address in the annotation_url "
+                    "column, or set annotation to false")
+        if not URL_RE.match(annotation_url):
+            return (f"annotation_url '{annotation_url}' cannot be used: it must be "
+                    f"{URL_RULE}")
+        if not ANNOTATION_URL_RE.search(annotation_url):
+            return (f"annotation_url '{annotation_url}' is not a GTF, GFF or BED file "
+                    "(optionally gzipped), which is all genomepy can take")
+    return None
+
+
+def wants_annotation(value):
+    """The same test main.nf and update_refgenie.py apply to the annotation column."""
+    return str(value or "").strip().lower() == "true"
+
+
+def parse_aliases(value):
+    """'yeast; sacCer' -> ['yeast', 'sacCer']."""
+    return [a.strip() for a in str(value or "").split(";") if a.strip()]
+
+
+class RequestLedger:
+    """
+    What the rows accepted so far have claimed, so a later row can be checked
+    against them before anything is downloaded.
+
+    Both checks are offline and both were previously left to fail late or not at all:
+
+      * Two rows resolving to the same (provider, assembly, release) became two
+        identical download tasks publishing into one directory. Wasteful when the
+        rows agree; when they disagree on `annotation`, the provenance.json that
+        survives can be the sequence-only task's, and the GTF is then ingested
+        under the 'default' tag with its release lost.
+
+      * An alias names exactly one genome. The ingest already refuses to repoint
+        one, but only discovers the clash after every genome has been fetched.
+
+    The same alias on two rows is fine when both rows are the same genome - two
+    releases of one assembly, say - so the alias check compares (provider, assembly)
+    and ignores release.
+    """
+
+    def __init__(self):
+        self._targets = {}       # (provider, assembly, release) -> line number
+        self._alias_owner = {}   # alias -> ((provider, assembly), line number)
+
+    def conflict(self, lineno, provider, assembly, release, aliases):
+        """Why this row cannot stand beside the accepted ones, or None. Claims on None."""
+        genome = (str(provider).strip().lower(), assembly)
+        target = genome + (release,)
+
+        earlier = self._targets.get(target)
+        if earlier is not None:
+            pinned = f" release {release}" if release else ""
+            return (
+                f"resolves to {assembly} from '{provider}'{pinned}, which line "
+                f"{earlier} already requests. Merge the two rows into one, putting "
+                "both sets of aliases on it"
+            )
+
+        for alias in aliases:
+            owner = self._alias_owner.get(alias)
+            if owner is not None and owner[0] != genome:
+                (other_provider, other_assembly), other_line = owner
+                return (
+                    f"alias '{alias}' is already given to {other_assembly} from "
+                    f"'{other_provider}' on line {other_line}. An alias can name only "
+                    "one genome; give this row a different one"
+                )
+
+        self._targets[target] = lineno
+        for alias in aliases:
+            self._alias_owner.setdefault(alias, (genome, lineno))
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -413,7 +659,8 @@ def main():
         description="Resolve generic species queries into exact assemblies."
     )
     parser.add_argument("input_csv",
-                        help="Request CSV (species, query, provider, annotation, aliases, release)")
+                        help="Request CSV (species, query, provider, annotation, aliases, release, "
+                             "url, annotation_url, resources)")
     parser.add_argument(
         "output_csv", nargs="?", default="requests/requests_resolved.csv",
         help="Resolved CSV to write (default: requests/requests_resolved.csv)",
@@ -428,7 +675,19 @@ def main():
     input_file = args.input_csv
     output_file = args.output_csv
 
+    configure_genomepy_logging()
+
+    # What can be asked for in the `resources` column. A definition that cannot be
+    # read is a fault in the pipeline's own files, not in a request row, so it
+    # stops the run rather than being reported against whichever row came first.
+    try:
+        registry = resource_registry.load_registry()
+    except ValueError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+
     resolved_cache = load_cache(output_file)
+    ledger = RequestLedger()
 
     resolved_rows = []
     # Rows that could not be turned into a concrete assembly. Collected rather than
@@ -447,11 +706,39 @@ def main():
                 # Optional. Absent from older request CSVs, where DictReader yields
                 # None - which must read as "unpinned", not crash.
                 release = (row.get("release") or "").strip()
+                aliases = parse_aliases(row.get("aliases"))
+                url = (row.get("url") or "").strip()
+                annotation_url = (row.get("annotation_url") or "").strip()
+                wanted, resources_problem = resource_registry.parse_request(
+                    row.get("resources"), registry
+                )
+                resources = resource_registry.format_request(wanted)
 
                 if not query:
                     unresolved.append(
                         (lineno, species or "(no species)", "(empty)", "no query given")
                     )
+                    continue
+
+                # Resources that are not in the registry, or not published for the
+                # build named. Offline, so before anything that touches the network.
+                if resources_problem:
+                    print(f"ERROR: {resources_problem}.", file=sys.stderr)
+                    unresolved.append((lineno, species, query, resources_problem))
+                    continue
+
+                # A provider genomepy has never heard of. This used to pass through
+                # unnoticed - every provider was searched, nothing matched the
+                # filter, and the row failed with "no matches found" - which hid a
+                # typo behind a message about the query. Now that the name is handed
+                # to genomepy, it would raise instead and end the whole run.
+                if provider_filter and provider_filter not in PROVIDERS:
+                    reason = (
+                        f"unknown provider '{provider_filter}' "
+                        f"(known: {', '.join(sorted(PROVIDERS))})"
+                    )
+                    print(f"ERROR: {reason}.", file=sys.stderr)
+                    unresolved.append((lineno, species, query, reason))
                     continue
 
                 # Refuse an unpinnable combination before searching. Only possible
@@ -465,66 +752,125 @@ def main():
                         continue
 
                 # ------------------------------------------------------------------
+                # A genome requested by address: taken as written, no search.
+                # (A release on such a row has already been refused just above.)
+                # ------------------------------------------------------------------
+                if provider_filter == URL_PROVIDER:
+                    # genomepy's own name for the provider, as for every other row.
+                    url_provider = PROVIDERS[URL_PROVIDER].name
+                    reason = (
+                        url_request_problem(query, url, annotation_url, annotation)
+                        or ledger.conflict(lineno, url_provider, query, release, aliases)
+                    )
+                    if reason:
+                        print(f"ERROR: {reason}.", file=sys.stderr)
+                        unresolved.append((lineno, species, query, reason))
+                        continue
+                    print(f"\n--- '{query}' for {species} is requested by address. "
+                          "Nothing to search. ---")
+                    resolved_rows.append({
+                        "species": species,
+                        "assembly": query,
+                        "provider": url_provider,
+                        "annotation": annotation,
+                        "query": query,
+                        "release": release,
+                        "aliases": ";".join(aliases),
+                        "resources": resources,
+                        "url": url,
+                        "annotation_url": annotation_url if wants_annotation(annotation) else "",
+                    })
+                    write_resolved(output_file, resolved_rows)
+                    continue
+                if url or annotation_url:
+                    # Ignoring it would download something other than the address
+                    # the row plainly names.
+                    reason = (
+                        "the url and annotation_url columns are only used with provider "
+                        f"'{URL_PROVIDER}'; this row's provider is "
+                        f"'{provider_filter or '(none)'}'"
+                    )
+                    print(f"ERROR: {reason}.", file=sys.stderr)
+                    unresolved.append((lineno, species, query, reason))
+                    continue
+
+                # ------------------------------------------------------------------
                 # Cache lookup
                 # ------------------------------------------------------------------
-                cached_row = resolved_cache.get((species, query))
+                # A changed provider or release is a cache miss rather than a
+                # mismatch to report: both are part of what identifies the request
+                # (see load_cache and cached_resolution).
+                cached_row = cached_resolution(
+                    resolved_cache, species, query, release, provider_filter
+                )
                 if cached_row is not None:
                     cached_assembly = (cached_row.get("assembly") or "").strip()
                     cached_provider = (cached_row.get("provider") or "").strip()
 
-                    # A provider filter added or changed since the cached run must not be
-                    # ignored: the cached assembly may come from a provider the user has
-                    # now explicitly ruled out.
-                    cached_release = (cached_row.get("release") or "").strip()
-
-                    if provider_filter and cached_provider.lower() != provider_filter:
-                        print(
-                            f"\n--- Cached resolution for '{species}' ({cached_assembly} from "
-                            f"'{cached_provider}') does not match the requested provider "
-                            f"'{provider_filter}'. Re-resolving. ---"
-                        )
-                    elif cached_release != release:
-                        # Same reasoning as the provider check above: a release added,
-                        # changed or removed since the cached run describes a different
-                        # download, so the cached answer must not stand in for it.
-                        print(
-                            f"\n--- Cached resolution for '{species}' ({cached_assembly}, "
-                            f"release '{cached_release or 'unpinned'}') does not match the "
-                            f"requested release '{release or 'unpinned'}'. Re-resolving. ---"
-                        )
-                    else:
-                        print(
-                            f"\n--- '{query}' for {species} already resolved to {cached_assembly}. "
-                            "Skipping search. ---"
-                        )
-                        # Rebuild the row rather than mutating the cached one, so stale or
-                        # unexpected columns in an older resolved CSV are not carried through.
-                        resolved_rows.append({
-                            "species": species,
-                            "assembly": cached_assembly,
-                            "provider": cached_provider,
-                            "annotation": annotation,
-                            "query": query,
-                            "release": release,
-                        })
-                        write_resolved(output_file, resolved_rows)
+                    print(
+                        f"\n--- '{query}' for {species} already resolved to {cached_assembly}. "
+                        "Skipping search. ---"
+                    )
+                    reason = ledger.conflict(
+                        lineno, cached_provider, cached_assembly, release, aliases
+                    )
+                    if reason:
+                        print(f"ERROR: {reason}.", file=sys.stderr)
+                        unresolved.append((lineno, species, query, reason))
                         continue
+                    # Rebuild the row rather than mutating the cached one, so stale or
+                    # unexpected columns in an older resolved CSV are not carried through.
+                    resolved_rows.append({
+                        "species": species,
+                        "assembly": cached_assembly,
+                        "provider": cached_provider,
+                        "annotation": annotation,
+                        "query": query,
+                        "release": release,
+                        "aliases": ";".join(aliases),
+                        "resources": resources,
+                    })
+                    write_resolved(output_file, resolved_rows)
+                    continue
 
                 # ------------------------------------------------------------------
                 # Network search
                 # ------------------------------------------------------------------
                 print(f"\n--- Resolving query: '{query}' for {species} ---")
 
-                results = search_assemblies(query)
+                results, offline = search_assemblies(query, provider_filter)
 
-                # Filter by provider if the user specified one
+                # The search was already limited to the named provider; this keeps
+                # the guarantee here, where the choice is made, rather than resting
+                # it on how genomepy treats the argument.
                 if provider_filter:
                     results = [r for r in results if r.provider.lower() == provider_filter]
+
+                # With no provider named, the candidates below come from whichever
+                # providers answered. Say when one did not: the list may be missing
+                # the very assembly that was wanted, and a single remaining match
+                # would otherwise be reported as "the exact match".
+                if offline and not provider_filter:
+                    warning = (
+                        f"WARNING: {', '.join(sorted(offline))} could not be searched "
+                        f"(offline), so the candidates for '{query}' may be incomplete."
+                    )
+                    # Red on a terminal, to match genomepy's warnings above it;
+                    # plain when stderr is a file or a pipe.
+                    if sys.stderr.isatty():
+                        warning = f"\033[31m{warning}\033[0m"
+                    print(warning, file=sys.stderr)
 
                 if not results:
                     # Distinguish "the provider is down" from "the query matched
                     # nothing" before reporting - the two need opposite responses.
-                    if provider_filter and provider_reachable(provider_filter) is False:
+                    # Offline DURING the search is the evidence that counts (see
+                    # search_assemblies); the ping covers a failure genomepy did not
+                    # announce.
+                    if provider_filter and (
+                        provider_filter in offline
+                        or provider_reachable(provider_filter) is False
+                    ):
                         reason = (
                             f"provider '{provider_filter}' is unreachable, so '{query}' "
                             "could not be resolved. This is usually transient; re-run "
@@ -534,6 +880,11 @@ def main():
                         reason = f"no matches found for '{query}'"
                         if provider_filter:
                             reason += f" with provider '{provider_filter}'"
+                        elif offline:
+                            reason += (
+                                f" among the providers that answered "
+                                f"({', '.join(sorted(offline))} could not be searched)"
+                            )
                     # Not reason.capitalize(): that would also lower-case the rest of
                     # the string, mangling assembly names like 'GRCh38' into 'grch38'.
                     print(f"ERROR: {reason}. Skipping.", file=sys.stderr)
@@ -577,6 +928,26 @@ def main():
                         continue
                     print(f"Selected: {chosen.assembly} from {chosen.provider}.")
 
+                # An annotation the provider does not publish cannot be delivered, and
+                # the search result already says so. Without this check the genome was
+                # downloaded in full first - genomepy logs a warning and carries on -
+                # and the request only failed at ingest, with "no GTF found".
+                #
+                # Not applied on a cache hit: the cached row records which assembly was
+                # chosen, not whether it is annotated, and looking that up would cost
+                # the network search the cache exists to avoid. A cached row switched
+                # to annotation=true still fails at ingest, as before.
+                if wants_annotation(annotation) and not chosen.has_annotation:
+                    reason = (
+                        f"annotation was requested, but genomepy reports none for "
+                        f"{chosen.assembly} on '{chosen.provider}'. Set annotation to "
+                        "false for this row, or choose an assembly or provider that "
+                        "publishes one"
+                    )
+                    print(f"ERROR: {reason}.", file=sys.stderr)
+                    unresolved.append((lineno, species, query, reason))
+                    continue
+
                 # Validate the release against what was actually selected. This is the
                 # only point where both are known: the release must exist AND contain
                 # this assembly, and when the request named no provider, whether the
@@ -588,6 +959,14 @@ def main():
                         unresolved.append((lineno, species, query, reason))
                         continue
 
+                reason = ledger.conflict(
+                    lineno, chosen.provider, chosen.assembly, release, aliases
+                )
+                if reason:
+                    print(f"ERROR: {reason}.", file=sys.stderr)
+                    unresolved.append((lineno, species, query, reason))
+                    continue
+
                 resolved_rows.append({
                     "species": species,
                     "assembly": chosen.assembly,
@@ -595,6 +974,8 @@ def main():
                     "annotation": annotation,
                     "query": query,
                     "release": release,
+                    "aliases": ";".join(aliases),
+                        "resources": resources,
                 })
                 # Flush after every resolution so an interrupted interactive session
                 # keeps the answers already given.

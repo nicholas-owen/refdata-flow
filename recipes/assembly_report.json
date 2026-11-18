@@ -1,0 +1,19 @@
+{
+  "name": "assembly_report",
+  "description": "The NCBI assembly report for this genome, as fetched by genomepy and stored verbatim. Its table gives every sequence's name in each naming scheme side by side - the assigned molecule (1, X, MT), the GenBank and RefSeq accessions, and the UCSC-style name (chr1, chrX, chrM) - with its length. That makes it the vault's chromosome alias table: the thing to consult before pairing this genome with any file that names contigs differently, such as a dbSNP VCF, which uses RefSeq accessions, or a UCSC-named blacklist. A passthrough. Present only for assemblies that have an accession; genomepy cannot fetch a report for one that does not.",
+  "required_files": [
+    {
+      "key": "assembly_report",
+      "description": "assembly_report.txt from a download directory"
+    }
+  ],
+  "required_assets": [],
+  "required_parameters": [],
+  "container": "databio/refgenie",
+  "assets": {
+    "assembly_report": "{genome}.assembly_report.txt"
+  },
+  "command_list": [
+    "cp {assembly_report} {asset_outfolder}/{genome}.assembly_report.txt"
+  ]
+}

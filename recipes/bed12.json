@@ -1,0 +1,31 @@
+{
+  "name": "bed12",
+  "description": "The annotation's transcripts as BED12, one line per transcript, sorted by position: the gene-model format RSeQC and the UCSC tools read. DERIVED from the vault's own annotation with UCSC's gtfToGenePred and genePredToBed by bin/derive_annotation.sh. The name column is the transcript_id as the GTF writes it. thickStart and thickEnd are the coding region; a transcript with no CDS has them equal, the UCSC convention for non-coding. The tag is the annotation release, and the annotation asset is recorded as the parent.",
+  "required_files": [
+    {
+      "key": "bed",
+      "description": "the BED12 file written by the DERIVE_ANNOTATION process"
+    },
+    {
+      "key": "provenance",
+      "description": "JSON record of how it was derived"
+    }
+  ],
+  "required_assets": [
+    {
+      "key": "annotation",
+      "default": "ensembl_gtf",
+      "description": "the annotation asset and release this was derived from; always given explicitly, since its name depends on the provider"
+    }
+  ],
+  "required_parameters": [],
+  "container": "databio/refgenie",
+  "assets": {
+    "bed12": "{genome}.bed",
+    "provenance": "{genome}.provenance.json"
+  },
+  "command_list": [
+    "cp {bed} {asset_outfolder}/{genome}.bed",
+    "cp {provenance} {asset_outfolder}/{genome}.provenance.json"
+  ]
+}

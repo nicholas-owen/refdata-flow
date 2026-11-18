@@ -1,0 +1,13 @@
+{
+  "name": "silva",
+  "description": "SILVA 138.2 SSU Ref NR99: small-subunit ribosomal RNA sequences with SILVA taxonomy, clustered at 99% identity, as one FASTA file. A fixed release; a later one is a new address here.",
+  "terms": "https://www.arb-silva.de/silva-license-information/",
+  "url": "https://www.arb-silva.de/fileadmin/silva_databases/release_138.2/Exports/SILVA_138.2_SSURef_NR99_tax_silva.fasta.gz",
+  "version": "138.2",
+  "checksum": {
+    "type": "md5",
+    "url": "https://www.arb-silva.de/fileadmin/silva_databases/release_138.2/Exports/SILVA_138.2_SSURef_NR99_tax_silva.fasta.gz.md5"
+  },
+  "unpack": null,
+  "size": "about 200 MB"
+}
